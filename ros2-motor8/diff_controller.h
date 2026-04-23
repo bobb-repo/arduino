@@ -1,7 +1,7 @@
 /* Functions and type-defs for PID control.
 
    Taken mostly from Mike Ferguson's ArbotiX code which lives at:
-   
+
    http://vanadium-ros-pkg.googlecode.com/svn/trunk/arbotix/
 */
 
@@ -10,21 +10,19 @@ typedef struct {
   double TargetTicksPerFrame;    // target speed in ticks per frame
   long Encoder;                  // encoder count
   long PrevEnc;                  // last encoder count
-  long PrevErr;                  // last encoder count
+  long PrevErr;                  // last error
 
   /*
   * Using previous input (PrevInput) instead of PrevError to avoid derivative kick,
   * see http://brettbeauregard.com/blog/2011/04/improving-the-beginner%E2%80%99s-pid-derivative-kick/
   */
   int PrevDelta;                // last input
-  //int PrevErr;                   // last error
 
   /*
   * Using integrated term (ITerm) instead of integrated error (Ierror),
   * to allow tuning changes,
   * see http://brettbeauregard.com/blog/2011/04/improving-the-beginner%E2%80%99s-pid-tuning-changes/
   */
-  //int Ierror;
   int ITerm;                    //integrated term
 
   long output;                    // last motor setting
@@ -61,24 +59,31 @@ void resetPID(){
    leftPID.TargetTicksPerFrame = 0.0;
    leftPID.Encoder = readEncoder(LEFT);
    leftPID.PrevEnc = leftPID.Encoder;
-   leftPID.PrevErr= 0;
+   leftPID.PrevErr = 0;
    leftPID.output = 0;
-   leftPID.PrevDelta= 0;
+   leftPID.PrevDelta = 0;
    leftPID.ITerm = 0;
    leftPID.idx = 0;
 
    rightPID.TargetTicksPerFrame = 0.0;
    rightPID.Encoder = readEncoder(RIGHT);
    rightPID.PrevEnc = rightPID.Encoder;
-   leftPID.PrevErr = 0;
+   // FIX: was leftPID.PrevErr = 0, so rightPID.PrevErr was never initialized,
+   // causing a derivative spike on the first PID update after reset.
+   rightPID.PrevErr = 0;
    rightPID.output = 0;
    rightPID.PrevDelta = 0;
    rightPID.ITerm = 0;
    rightPID.idx = 1;
 }
 
-/* PID routine to compute the next motor commands */
-void doPID(SetPointInfo * p) {
+/* PID routine to compute the next motor commands.
+ *
+ * FIX: motor_dir parameter added so clamping uses this motor's own direction
+ * instead of checking both global dir_left and dir_right.  Previously, if only
+ * one motor was running the other motor's PID would take the wrong clamp branch.
+ */
+void doPID(SetPointInfo * p, char motor_dir) {
   long Perror;
   long outputP;
   long outputD;
@@ -86,7 +91,6 @@ void doPID(SetPointInfo * p) {
   long output;
   int delta;
 
-  //Perror = p->TargetTicksPerFrame -u(p->Encoder - p->PrevEnc);
   delta = p->Encoder - p->PrevEnc;
   Perror = p->TargetTicksPerFrame - delta;
 
@@ -99,59 +103,67 @@ void doPID(SetPointInfo * p) {
   * see http://brettbeauregard.com/blog/2011/04/improving-the-beginner%E2%80%99s-pid-tuning-changes/
   */
 
-
   outputP = (Kp * Perror)/Ko;
-  outputD = (Kd * (Perror - p->PrevErr))/Ko ;
+  outputD = (Kd * (Perror - p->PrevErr))/Ko;
   outputI = p->ITerm;
-  output = (outputP + outputD);
+  // FIX: outputI was computed but never included in output, making Ki completely
+  // ineffective regardless of its value. Added here.
+  output = outputP + outputD + outputI;
 
   if(debugMode)
     Serial.println("    p " + String(Kp) + " " + String(outputP) + " d " + String(outputD) + " i " + String(outputI) + " sm " + String(output) + " nw " + String(output + p->output) );
-   
+
   p->PrevEnc = p->Encoder;
   p->PrevErr = Perror;
-  //output = (Kp * Perror - Kd * (delta - p->PrevDelta) + p->ITerm) / Ko;
 
-  output =  output + p->output;
+  output = output + p->output;
 
   if (output < 0)
-  { 
+  {
      if (output < -minOutput)
-       output =  -minOutput;
-     //output -= 5; 
+       output = -minOutput;
   }
   else
   {
     if(output < minOutput)
         output = minOutput;
-  }  
-  
-  // Accumulate Integral error *or* Limit output.
-  // Stop accumulating when output saturates
-  
-  if ((dir_left != DIR_STOPPED) || (dir_right != DIR_STOPPED) )
+  }
+
+  // Clamp output and track whether we are saturated for anti-windup below.
+  // FIX: was checking (dir_left != DIR_STOPPED) || (dir_right != DIR_STOPPED),
+  // which used the *other* motor's direction when computing one motor's PID,
+  // causing wrong clamping when only one motor was in motion.
+  bool saturated = false;
+  if (motor_dir != DIR_STOPPED)
   {
-     if (output >= MAX_FWD_PWM)
+    if (output >= MAX_FWD_PWM) {
       output = MAX_FWD_PWM;
-    else if (output <= MAX_REV_PWM)
+      saturated = true;
+    } else if (output <= MAX_REV_PWM) {
       output = MAX_REV_PWM;
+      saturated = true;
+    }
   }
   else
   {
-    // give kick at start to overcome inertia
-    
+    // Give startup kick to overcome inertia
+    saturated = true;
     if (output < 0)
       output = MAX_REV_PWM;
     else
       output = MAX_FWD_PWM;
+    lastPIDTime = millis() - (PID_INTERVAL*3);
+
   }
 
-  /*
-  * allow turning changes, see http://brettbeauregard.com/blog/2011/04/improving-the-beginner%E2%80%99s-pid-tuning-changes/
-  */
-  p->ITerm += Ki * Perror;
+  // FIX: ITerm previously accumulated unconditionally, causing integrator windup
+  // when the output was saturated.  Only accumulate when not at the limit.
+  if (!saturated) {
+    p->ITerm += Ki * Perror;
+  }
+
   p->output = output;
-  p->PrevDelta= delta;
+  p->PrevDelta = delta;
 }
 
 /* Read the encoder values and call the PID routine */
@@ -159,7 +171,7 @@ void updatePID() {
   /* Read the encoders */
   leftPID.Encoder = readEncoder(LEFT);
   rightPID.Encoder = readEncoder(RIGHT);
-  
+
   /* If we're not moving there is nothing more to do */
   if (!moving){
     /*
@@ -173,10 +185,11 @@ void updatePID() {
   }
   if(debugMode)
     Serial.println("enc l: " + String( leftPID.Encoder) + " r: " + String( rightPID.Encoder));
-  
-  /* Compute PID update for each motor */
-  doPID(&rightPID);
-  doPID(&leftPID);
+
+  /* Compute PID update for each motor, passing each motor's own direction. */
+  // FIX: pass dir_right / dir_left so doPID uses the correct per-motor direction.
+  doPID(&rightPID, dir_right);
+  doPID(&leftPID, dir_left);
 
   /* Set the motor speeds accordingly */
   setMotorSpeeds(leftPID.output, rightPID.output);

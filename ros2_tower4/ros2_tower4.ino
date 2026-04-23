@@ -10,7 +10,11 @@
 #define USE_TIMER_4 false
 #define USE_TIMER_5 false
 
+char version[] = {"1.22 "};  // lv blank after number
+
 #include "TimerInterrupt.h"
+// FIX #5: include watchdog for safe hardware reset
+#include <avr/wdt.h>
 
 // GPIO ASSIGNMENTS
 
@@ -101,12 +105,14 @@
 typedef struct MOTOR {
     int motorid;
     int armid;
-    char enGpio;
-    char dirGpio;
-    char stepGpio;
-    char positionAnalogPin;
-    char reservedGpio;
-    char limit1Gpio;
+    // FIX #13: use uint8_t for GPIO pin numbers (char is implementation-defined
+    // as signed or unsigned; uint8_t is unambiguous for pin indices 0-255)
+    uint8_t enGpio;
+    uint8_t dirGpio;
+    uint8_t stepGpio;
+    uint8_t positionAnalogPin;
+    uint8_t reservedGpio;
+    uint8_t limit1Gpio;
     char inverseDirection;
     char leaveEnabled;
     int  stepDelayTime;
@@ -155,8 +161,8 @@ typedef struct ARMDEF  {
 
 ARMDEF arms[ARMS_DEFINED] =
 {
-    { 1, 1, 0, 1, 1900, 340, 0},
-    { 1, 1, 2, 3, 1900, 340, 0}
+    { 1, 1, 0, 1, 1900, 380, 0},
+    { 1, 1, 2, 3, 1900, 240, 0}
 };
 
 #define MOTORS_DEFINED 4
@@ -174,16 +180,17 @@ char towerIntervalTable[MOTORS_DEFINED][INTERVAL_SLOTS] = {
  { 1, 1, 1, 1, 1, 1, 1, 1 },
  { 2, 2, 2, 2, 1, 1, 1, 1 },
  { 1, 1, 1, 1, 1, 1, 1, 1 },
- { 2, 2, 2, 2, 1, 1, 1, 1 },
+ { 2, 1, 1, 1, 1, 1, 1, 1 },
 };
 
 unsigned int switchTest = 0;
 unsigned int switchTestLast = 0;
 
-volatile unsigned int tickA = 0;
-volatile byte flag = 0;
-unsigned long lastTime;
+// FIX #12: removed unused globals tickA, flag, lastTime
+
 int airValveOn = 0;
+int errorCode = 99;
+
 
 #define CALIBRATE_IDLE            0
 #define CALIBRATE_GOING_DOWN      1
@@ -191,10 +198,7 @@ int airValveOn = 0;
 #define TOP_SWITCH_TRIGGER 1
 #define BOT_SWITCH_TRIGGER 2
 
-// Motor states
-#define MOTOR_IDLE  0
-#define MOTOR_CCW  1
-#define MOTOR_CW 2
+// FIX #12: removed unused defines MOTOR_IDLE, MOTOR_CCW, MOTOR_CW
 
 int speedLimiter = 0;
 int speedLimit = 0;
@@ -211,6 +215,9 @@ unsigned long pumpSampleTime = 0;
 int fakeMode = 0;
 int lastLeftTower = 1000;
 int lastRightTower = 1000;
+
+// FIX #8: towerCalibrationDone is used as a bool everywhere — declare it as one
+bool towerCalibrationDone = false;
 
 // Debug flags set in ISR
 volatile char debugFlagMotorStopped[MOTORS_DEFINED] = {0};
@@ -353,7 +360,7 @@ int runCommand() {
 
   int tank;
   MOTOR *mp;
-  int t;
+  int t,v;
   ARMDEF *ap;
   MOTOR *st0M;
   MOTOR *st1M;
@@ -370,8 +377,12 @@ int runCommand() {
   switch (cmd) {
 
     case RESET:
-      setup();
-      Serial.println(F("*OK"));
+      // FIX #5: calling setup() while the timer ISR is live corrupts timer state.
+      // Use the watchdog to trigger a clean hardware reset instead.
+      Serial.println(F("*Resetting..."));
+      Serial.flush();
+      wdt_enable(WDTO_15MS);
+      while (1) {}
       return 0;
 
     case DBUG:
@@ -416,8 +427,11 @@ int runCommand() {
       return 0;
 
     case SPEED:
-      speedLimit = arg1;
-      speedLimiter = arg;
+      speedLimit   = arg1;
+      // FIX #2: was 'speedLimiter = arg' which assigned the parser argument-count
+      // variable (always 1 here) instead of resetting the countdown. Reset to 0
+      // so the new speed limit takes effect on the very next ISR tick.
+      speedLimiter = 0;
       Serial.println(F("*OK"));
       break;
 
@@ -447,9 +461,14 @@ int runCommand() {
       return 0;
 
     case STATE:
+      // FIX #10: in the original, 'v = 0' inside the fakeMode branch was
+      // immediately overwritten by the motor-direction check that followed
+      // unconditionally.  The direction check now lives inside the else branch
+      // so fake mode correctly reports v = 0 (not moving).
       if (fakeMode) {
         pInMm0 = lastLeftTower;
         pInMm1 = lastRightTower;
+        v = 0;
       } else {
         ap = &arms[0];
         pInMm0 = motors[ap->stage0Motor].towerLocationTicks / motors[ap->stage0Motor].ticksPerMm +
@@ -460,10 +479,19 @@ int runCommand() {
         pInMm1 = motors[ap->stage0Motor].towerLocationTicks / motors[ap->stage0Motor].ticksPerMm +
                  motors[ap->stage1Motor].towerLocationTicks / motors[ap->stage1Motor].ticksPerMm +
                  ap->lowestPositionMm;
+
+        if ( (motors[0].towerDirection == TOWER_STOPPED) &&
+             (motors[1].towerDirection == TOWER_STOPPED) &&
+             (motors[2].towerDirection == TOWER_STOPPED) &&
+             (motors[3].towerDirection == TOWER_STOPPED)  )
+          v = 0;
+        else
+          v = 1;
       }
 
       t = (analogRead(TANK_SENSOR) * 10) / (PSI_TICKS * 10);
-      sprintf(buffer, "%ld %ld %d %d %d %d", pInMm0, pInMm1, pumpOn, pumpAuto, airValveOn, t);
+      // FIX #11: use snprintf to prevent buffer overrun
+      snprintf(buffer, sizeof(buffer), "%ld %ld %d %d %d %d %d %d ", pInMm0, pInMm1, v, errorCode, pumpOn, pumpAuto, airValveOn, t);
       Serial.println(buffer);
       return 0;
 
@@ -475,10 +503,22 @@ int runCommand() {
         return 0;
       }
 
+      if ((arg1 == 0) && (arg2 == 0))
+      {
+        Serial.println(F("OK"));
+        return 0;
+      }
+
+      if (towerCalibrationDone == false)
+      {
+        Serial.println(F("ERR: Not calibrated"));
+        return 0;
+      }
+
       for (int arm = 0; arm < 2; arm++) {
         int p = (arm == 0 ? arg1 : arg2);
 
-        if (arm >= ARMS_DEFINED) {
+        if (arm >= ARMS_DEFINED/2) {
           Serial.println(F("*ERR: Invalid arm index"));
           continue;
         }
@@ -600,6 +640,7 @@ int runCommand() {
 
       for (int i = 0; i < MOTORS_DEFINED; i++) {
         mp = &motors[i];
+        mp->towerDirection = TOWER_DOWN;
         mp->towerLocationTicks = CALIBRATION_LARGE_MOVE;
         mp->calibrateState = CALIBRATE_GOING_DOWN;
         mp->switchMask = BOT_SWITCH_TRIGGER;
@@ -837,7 +878,11 @@ void TimerHandler() {
       if (mp->switchMask == BOT_SWITCH_TRIGGER) {
         mp->switchMask = 0;
         mp->towerDirection = TOWER_STOPPED_SWITCH;
-        enableMotor(mp, true);
+        // FIX #1: was enableMotor(mp, true) which always kept the motor enabled
+        // on a limit-switch stop, ignoring leaveEnabled. Now consistent with the
+        // normal tick-target stop path.
+        if (!mp->leaveEnabled)
+          enableMotor(mp, false);
         debugFlagSwitchDetected[i] = 1;
         continue;
       }
@@ -898,11 +943,10 @@ void setup() {
 
   pinMode(OUT_VALVE, OUTPUT);
   digitalWrite(OUT_VALVE, HIGH);
+  // FIX #6: removed duplicate pinMode/digitalWrite for OUT_VALVE that appeared
+  // a second time here in the original.
 
   pinMode(K1, INPUT);
-
-  pinMode(OUT_VALVE, OUTPUT);
-  digitalWrite(OUT_VALVE, HIGH);
 
   airValveOn = 0;
   switchTest = 0;
@@ -925,23 +969,25 @@ void setup() {
     motors[i].loopMode = LOOP_MODE_IDLE;
   }
 
+  // FIX #7: removed duplicate speedLimiter = 0 / speedLimit = 0 that appeared
+  // a second time after ITimer1 setup in the original.
   speedLimiter = 0;
   speedLimit = 0;
+  towerCalibrationDone = false;
 
   ITimer1.init();
 
   if (ITimer1.attachInterruptInterval(TIMER_INTERVAL_MS, TimerHandler)) {
-    Serial.print(F("*Starting  ITimer OK, millis() = "));
-    Serial.println(millis());
+//    Serial.print(F("*Starting  ITimer OK, millis() = "));
+  //  Serial.println(millis());
   } else {
     Serial.println(F("*Can't set ITimer. Select another freq. or timer"));
   }
 
-  speedLimiter = 0;
-  speedLimit = 0;
   debugMode = 0;
 
-  Serial.print(F("*Tower Setup Done "));
+  Serial.print(F("*Tower Setup Done: Version "));
+  Serial.print(version);
   Serial.print(F(__DATE__));
   Serial.print(F(" at "));
   Serial.println(F(__TIME__));
@@ -1050,6 +1096,7 @@ void loop() {
           Serial.println(i);
         }
         mp->calibrationComplete = true;
+        mp->towerDirection = TOWER_STOPPED;
 
         if (mp->armid >= 0) {
           arms[mp->armid].towerLocationMm = arms[mp->armid].lowestPositionMm;
@@ -1057,19 +1104,23 @@ void loop() {
 
         if (motors[0].calibrationComplete && motors[1].calibrationComplete &&
             motors[2].calibrationComplete && motors[3].calibrationComplete) {
+          towerCalibrationDone = true;
+
           Serial.println(F(" OK- Cal Done"));
         }
       }
     }
 
     if (mp->towerDirection <= TOWER_STOPPED_SWITCH) {
+      // FIX #3: 'int t' was declared between the switch and the first case label,
+      // which is jumped over by every case — undefined behaviour per C++ standard.
+      // Moved inside each case block that needs it.
       switch (mp->loopMode) {
-        int t;
 
-        case LOOP_MODE_DOWN:
+        case LOOP_MODE_DOWN: {
+          int t = random(1000, mp->towerUpperLimitTicks * 0.75) & 0xFFFF;
           mp->loopMode = LOOP_MODE_UP;
           mp->switchMask = 0;
-          t = random(1000, mp->towerUpperLimitTicks * 0.75) & 0xFFFF;
           startMotor(mp, 'u', t);
           if (debugMode) {
             Serial.print(F("**Going up: "));
@@ -1078,11 +1129,12 @@ void loop() {
             Serial.println(t);
           }
           break;
+        }
 
-        case LOOP_MODE_UP:
+        case LOOP_MODE_UP: {
+          int t = 0;
           mp->loopMode = LOOP_MODE_DOWN;
           mp->switchMask = BOT_SWITCH_TRIGGER;
-          t = 0;
           startMotor(mp, 'd', DEFAULT_LARGE_TICK_COUNT);
           if (debugMode) {
             Serial.print(F("**Going down: "));
@@ -1091,6 +1143,7 @@ void loop() {
             Serial.println(t);
           }
           break;
+        }
 
         case LOOP_MODE_IDLE:
           break;
@@ -1111,7 +1164,10 @@ void loop() {
   }
 
   if (pumpAuto) {
-    if (pumpSampleTime < millis()) {
+    // FIX #4: original used 'pumpSampleTime < millis()' which fails after
+    // millis() rolls over (~49 days), and set pumpSampleTime = millis() +
+    // interval which can wrap to near-zero.  Use elapsed-time pattern instead.
+    if (millis() - pumpSampleTime >= (unsigned long)pumpSampleInterval) {
       tank = analogRead(TANK_SENSOR);
 
       if (pumpOn) {
@@ -1128,7 +1184,7 @@ void loop() {
         }
       }
 
-      pumpSampleTime = millis() + pumpSampleInterval;
+      pumpSampleTime = millis();
     }
   }
 }
