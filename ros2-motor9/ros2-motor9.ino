@@ -75,7 +75,7 @@ unsigned long lastMilli = 0;
 /* Serial port baud rate */
 #define BAUDRATE     57600
 
-#define VERSION "1.4"
+#define VERSION "1.42"
 
 
 #if defined(ARDUINO) && ARDUINO >= 100
@@ -89,7 +89,7 @@ unsigned long lastMilli = 0;
 
 
   /* Run the PID loop at PID_RATE times per second */
-  #define PID_RATE           2     // Hz
+  #define PID_RATE           4     // Hz
 
   /* Convert the rate into an interval */
   const int PID_INTERVAL =  1000 / PID_RATE;
@@ -206,8 +206,13 @@ void runCommand() {
   case READ_ENCODERS:
     Serial.print(readEncoder(LEFT));
     Serial.print(" ");
-    Serial.println(readEncoder(RIGHT));
-    break;
+    Serial.print(readEncoder(RIGHT));
+    Serial.print(" ");
+    Serial.print(leftPID.output);
+    Serial.print(" ");
+    Serial.println(rightPID.output);
+
+   break;
 
    case RESET_ENCODERS:
     resetEncoders();
@@ -337,7 +342,7 @@ void rightWheelMove(int speed){
         Serial.println(millis());
       }
 
-      analogWrite(MR_VR, max(0, abs(speed) - 3));
+      analogWrite(MR_VR, abs(speed)-6);
 
       if (speed > 0){
         digitalWrite(MR_DIR,HIGH);
@@ -352,6 +357,9 @@ void rightWheelMove(int speed){
 
 void rightMotorInt() {
 
+Serial.print('r');
+  
+  
   switch(dir_right) {
 
   case DIR_STOPPED:
@@ -369,6 +377,7 @@ void rightMotorInt() {
 
 void leftMotorInt() {
 
+  Serial.print('l');
   switch(dir_left) {
 
   case DIR_STOPPED:
