@@ -10,7 +10,7 @@
 #define USE_TIMER_4 false
 #define USE_TIMER_5 false
 
-char version[] = {"1.22 "};  // lv blank after number
+char version[] = {"1.24 "};  // lv blank after number
 
 #include "TimerInterrupt.h"
 // FIX #5: include watchdog for safe hardware reset
@@ -161,16 +161,16 @@ typedef struct ARMDEF  {
 
 ARMDEF arms[ARMS_DEFINED] =
 {
-    { 1, 1, 0, 1, 1900, 380, 0},
-    { 1, 1, 2, 3, 1900, 240, 0}
+    { 1, 1, 0, 1, 1900, 340, 0},
+    { 1, 1, 2, 3, 1900, 280, 0}
 };
 
 #define MOTORS_DEFINED 4
 
 MOTOR motors[MOTORS_DEFINED] = {
-     {0, 0, MT0S0_ST_EN,  MT0S0_ST_DIR,  MT0S0_ST_PL,  MT0S0_POS,  MT0S0_RESERVED,  MT0S0_BOTTOM_LIMIT_SWITCH,  1, 1, 100, 25.0,  25000, 850,  187},
+     {0, 0, MT0S0_ST_EN,  MT0S0_ST_DIR,  MT0S0_ST_PL,  MT0S0_POS,  MT0S0_RESERVED,  MT0S0_BOTTOM_LIMIT_SWITCH,   1, 1, 100, 25.0,  25000, 850,  187},
      {1, -1, MT0S10_ST_EN, MT0S10_ST_DIR, MT0S10_ST_PL, MT0S10_POS, MT0S10_RESERVED, MT0S10_BOTTOM_LIMIT_SWITCH, 0, 1, 100, 8.0,   7400,  1000, 153},
-     {2, 1, MT1S0_ST_EN,  MT1S0_ST_DIR,  MT1S0_ST_PL,  MT1S0_POS,  MT1S0_RESERVED,  MT1S0_BOTTOM_LIMIT_SWITCH,  1, 1, 100, 25.0,  25000, 850,  187},
+     {2, 1, MT1S0_ST_EN,  MT1S0_ST_DIR,  MT1S0_ST_PL,  MT1S0_POS,  MT1S0_RESERVED,  MT1S0_BOTTOM_LIMIT_SWITCH,   1, 1, 100, 25.0,  25000, 850,  187},
      {3, -1, MT1S10_ST_EN, MT1S10_ST_DIR, MT1S10_ST_PL, MT1S10_POS, MT1S10_RESERVED, MT1S10_BOTTOM_LIMIT_SWITCH, 1, 1, 100, 8.0,   7500,  1000, 153}
 };
 
@@ -207,7 +207,7 @@ int speedLimit = 0;
 char pumpAuto = 0;
 char pumpOn = 0;
 int pumpOnThreshold = 50 * PSI_TICKS;
-int pumpOffThreshold = 100 * PSI_TICKS;
+int pumpOffThreshold = 85 * PSI_TICKS;
 
 int pumpSampleInterval = 1000;
 unsigned long pumpSampleTime = 0;
@@ -932,7 +932,7 @@ void TimerHandler() {
 
 void setup() {
 
-  Serial.begin(38400);
+  Serial.begin(57600);
   pumpAuto = 0;
   pumpOn = 0;
 
