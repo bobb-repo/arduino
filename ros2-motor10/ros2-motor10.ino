@@ -115,7 +115,7 @@
  *********************************************************************/
 
 
-#define VERSION "1.68"
+#define VERSION "1.70"
 
 
 // pin defs
@@ -364,6 +364,7 @@ void runCommand() {
   char *p = argv1;
   char *str;
   int pid_args[4];
+  long reqL, reqR;      /* requested targets, before the speed governor */
   arg1 = atoi(argv1);
   arg2 = atoi(argv2);
 
@@ -501,12 +502,26 @@ void runCommand() {
     moving = 1;
     motorsCommanded = true;
 
+    /* Govern the pair together so the commanded turn survives -- see
+       governSpeedPair(). Clamping each wheel separately flattens a turn into a
+       straight line whenever both exceed the limit. */
+    reqL = arg1;
+    reqR = arg2;
+    governSpeedPair(&arg1, &arg2);
+
     if(debugMode)
     {
       Serial.print("ms: ");
-      Serial.print(arg1);
+      Serial.print(reqL);
       Serial.print(" ");
-      Serial.println(arg2);
+      Serial.print(reqR);
+      if (reqL != arg1 || reqR != arg2) {
+        Serial.print(" -> ");
+        Serial.print(arg1);
+        Serial.print(" ");
+        Serial.print(arg2);
+      }
+      Serial.println();
     }
 
     /* Per-wheel, so that a zero target on one side is a genuine "hold still"

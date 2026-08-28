@@ -198,6 +198,40 @@ static long divRound(long num, long den)
   return (num >= 0) ? (num + half) / den : (num - half) / den;
 }
 
+/* Apply the speed governor to BOTH wheels together, scaling rather than
+   clamping.
+
+   The ratio between the two targets *is* the commanded turn. Clamping each
+   wheel independently changes that ratio, and when both exceed the limit it
+   flattens them to the same value -- so the robot drives straight through a
+   commanded curve.
+
+   Observed on the robot: nav asked for 20/12 (a gentle right), the per-wheel
+   clamp made it 8/8, the base went straight, heading error grew, nav escalated
+   its angular command to saturation, and then one wheel finally fell below the
+   limit and the whole accumulated correction happened in one frame. Drift,
+   snap, overshoot, snap back. It was invisible on the bench because every test
+   used equal targets (`m 30 30`), where clamping and scaling agree.
+
+   Scaling preserves the ratio: 20/12 becomes 8/5.
+
+   Resolution is coarse at MAX_TICKS_PER_FRAME = 8 -- the tightest expressible
+   curve ratio is 1/8 -- so a very tight turn quantises, and a wheel whose share
+   rounds to 0 is then held still by the per-wheel zero handling in doPID(),
+   which is the right rendering of a near-pivot. */
+void governSpeedPair(long *left, long *right)
+{
+  long magL = (*left  >= 0) ? *left  : -*left;
+  long magR = (*right >= 0) ? *right : -*right;
+  long peak = (magL > magR) ? magL : magR;
+
+  if (peak <= MAX_TICKS_PER_FRAME)
+    return;
+
+  *left  = divRound(*left  * MAX_TICKS_PER_FRAME, peak);
+  *right = divRound(*right * MAX_TICKS_PER_FRAME, peak);
+}
+
 /*
 * Initialize PID variables to zero to prevent startup spikes
 * when turning PID on to start moving
@@ -255,12 +289,9 @@ void resetPID(){
    wheel would be driven at MAX_REV_PWM. */
 void applyWheelTarget(SetPointInfo *p, long target, char motor_dir)
 {
-  /* Govern speed here, on the requested ticks per frame, rather than by
-     clamping the PID's output.  Clamping the output caps speed too, but it
-     does so by removing the loop's authority -- see MAX_FWD_PWM. */
-  if (target >  MAX_TICKS_PER_FRAME) target =  MAX_TICKS_PER_FRAME;
-  if (target < -MAX_TICKS_PER_FRAME) target = -MAX_TICKS_PER_FRAME;
-
+  /* No governing here any more. Speed limiting is applied to both wheels
+     together, before this is called, by governSpeedPair() -- a per-wheel clamp
+     silently destroys the commanded turn. */
   p->TargetTicksPerFrame = target;
 
   if (target == 0) {
