@@ -51,6 +51,11 @@ typedef struct {
   int  kickMinFwd;
   int  kickMinRev;
 
+  /* Pre-learning seed for this wheel, from the DEFAULT_SEED_PWM_* defines in
+   * resetPID().  Per wheel for the same reason as the kick thresholds: the two
+   * wheels need different outputs to hold the same speed. */
+  int  defaultSeedPwm;
+
   /* Learned operating point: the output magnitude this wheel settled at last
    * time it was tracking, and the target it settled at.  Used to seed the PID
    * when the kick hands off, instead of starting from minOutput.
@@ -58,7 +63,7 @@ typedef struct {
    * Deliberately NOT cleared by resetPID() -- resetPID runs on every stop, and
    * clearing here would make the wheel relearn on every single move, which is
    * the whole problem this exists to solve.  Zero-initialised as globals, so
-   * they start invalid and the first move falls back to DEFAULT_SEED_PWM. */
+   * they start invalid and the first move falls back to defaultSeedPwm. */
   long learnedFwd;
   long learnedRev;
   int  learnedFwdTarget;
@@ -179,8 +184,20 @@ int minOutput = 15;
 /* Seed used before anything has been learned, i.e. the first move after power
    up.  Deliberately not minOutput: dropping from the kick's PWM straight to 15
    nearly stalled the left wheel before the loop could climb back.  A mid-range
-   guess costs one slightly-off move and is then replaced by a learned value. */
-#define DEFAULT_SEED_PWM   35
+   guess costs one slightly-off move and is then replaced by a learned value.
+
+   Per wheel, because the two wheels do not want the same output: the settled
+   operating points at 8 ticks/frame are about 35 left and 28 right.  A single
+   shared 35 seeded the right wheel 7 counts high, and the log of 2026-08-28
+   shows what that costs -- with an identical 8/8 command the right wheel ran
+   12-15% fast for the whole of the first burst, which flattens every commanded
+   wheel ratio toward 1:1 and so cancels the commanded turn.  Three bursts of
+   motion were not enough for filterToward() to walk it back.
+
+   These are forward numbers.  Reverse has never been run, so the reverse seed
+   is the same guess it always was -- measure it before trusting it. */
+#define DEFAULT_SEED_PWM_LEFT    35
+#define DEFAULT_SEED_PWM_RIGHT   28
 
 unsigned char moving = 0; // is the base in motion?
 
@@ -256,6 +273,7 @@ void resetPID(){
    leftPID.settledFrames = 0;
    leftPID.kickMinFwd = KICK_MIN_TICKS_LEFT_FWD;
    leftPID.kickMinRev = KICK_MIN_TICKS_LEFT_REV;
+   leftPID.defaultSeedPwm = DEFAULT_SEED_PWM_LEFT;
 
    rightPID.TargetTicksPerFrame = 0;
    rightPID.Encoder = readEncoder(RIGHT);
@@ -271,6 +289,7 @@ void resetPID(){
    rightPID.settledFrames = 0;
    rightPID.kickMinFwd = KICK_MIN_TICKS_RIGHT_FWD;
    rightPID.kickMinRev = KICK_MIN_TICKS_RIGHT_REV;
+   rightPID.defaultSeedPwm = DEFAULT_SEED_PWM_RIGHT;
 }
 
 /* Apply a new target to one wheel, arming the startup kick only when it is
@@ -336,13 +355,13 @@ long kickHandoffSeed(SetPointInfo *p)
         abs((int)target - p->learnedFwdTarget) <= LEARN_TARGET_BAND)
       seed = p->learnedFwd;
     else
-      seed = DEFAULT_SEED_PWM;
+      seed = p->defaultSeedPwm;
   } else {
     if (p->learnedRevValid &&
         abs((int)target - p->learnedRevTarget) <= LEARN_TARGET_BAND)
       seed = -p->learnedRev;
     else
-      seed = -DEFAULT_SEED_PWM;
+      seed = -p->defaultSeedPwm;
   }
 
   /* A learned value predates any change to the PWM limits, so clamp. */

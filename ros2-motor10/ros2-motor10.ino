@@ -112,10 +112,29 @@
  *    live; 'f 0' disables it, which is how to confirm the filter is what
  *    removed the spikes.  Rejected counts appear in the debug encoder line
  *    and in the 'f' reply, and are cleared by RESET_ENCODERS.
+ *
+ *  v1.70:
+ *  - MAX_TICKS_PER_FRAME now governs the wheel pair together
+ *    (governSpeedPair), scaling both by a common factor instead of clamping
+ *    each wheel independently.  Clamping flattened both wheels to the same
+ *    value whenever both exceeded the cap, so the base drove straight through
+ *    a commanded curve.  Invisible to bench tests, which all used 'm 30 30' --
+ *    equal targets are the one case where clamping and scaling agree.
+ *
+ *  v1.71, from the nav-driven log of 2026-08-28 (first run at host
+ *  loop_rate 4.0):
+ *  - Pre-learning seed is now per wheel (DEFAULT_SEED_PWM_LEFT / _RIGHT,
+ *    35 / 28) instead of one shared 35.  The right wheel was being seeded 7
+ *    counts high on every cold start, and ran 12-15% fast against an
+ *    identical 8/8 command for the whole first burst.  That surplus flattens
+ *    the delivered wheel ratio toward 1:1, which cancels the commanded turn:
+ *    over three bursts the base executed about 2% of the commanded rotation,
+ *    and in one burst turned the wrong way.  Learning did not walk it back
+ *    within ~11 s of motion.
  *********************************************************************/
 
 
-#define VERSION "1.70"
+#define VERSION "1.71"
 
 
 // pin defs
