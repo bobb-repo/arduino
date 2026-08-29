@@ -3,9 +3,9 @@
 #include <Servo.h>
 #include <stdio.h>
 #include <LibPrintf.h>
-#include <VL53L0X.h>
+#include <VL53L1X.h>
 
-char version[] = {" 1.41"};
+char version[] = {" 1.47"};
 
 #define USE_TIMER_1 false
 #define USE_TIMER_2 true
@@ -41,24 +41,27 @@ char version[] = {" 1.41"};
 #define SOL1        37
 #define SOL2        38
 
-#define ST1_LIM1    42
+#define ST1_LIM1_RIGHT    46
+#define ST1_LIM1_LEFT     42
+
 #define ST1_LIM2    43
 
 #define ST1_ENABLE  44
-#define ST1_STEP    46
+#define ST1_STEP_RIGHT    42
+#define ST1_STEP_LEFT     46
 #define ST1_DIR     47
 
 #define ST1_POS_LEFT    A0
 #define ST2_POS_LEFT    A1
 #define ST3_POS_LEFT    A2
 #define LIGHT_IN2  A7
-#define VAC_SENSOR_LEFT A3
+#define VAC_SENSOR_LEFT A13
 
 #define ST1_POS_RIGHT    A0
 #define ST2_POS_RIGHT    A1
 #define ST3_POS_RIGHT    A2
 #define LIGHT_IN2  A7
-#define VAC_SENSOR_RIGHT A9
+#define VAC_SENSOR_RIGHT A13
 
 #define SV1_A      A10
 #define SV2_A      A11
@@ -152,14 +155,14 @@ typedef struct MOTOR {
     int avAtMaxDegree;
     int reverse;
     char leaveEnabled;
-    int idleEnableOnTimeMs;
+    long idleEnableOnTimeMs;
      
     char enableOn;
     char direction;
 
     int beginZeroMonitoring;
     
-    int stopFlag;
+    volatile int stopFlag;
     char pulseHigh;
     char speedMode;
     int position;
@@ -193,15 +196,15 @@ typedef struct MOTOR_LIMITS{
 
 #define MOTORS_DEFINED 3
 
-MOTOR leftMotors[MOTORS_DEFINED] = { {ST3_ENABLE,ST3_DIR,ST3_STEP,ST3_POS_LEFT,ST3_LIM1,ST3_LIM2,19.0,3.11,90,235, 783, 0,1,30000,MOTOR_IDLE,0,0},
-                                     {ST2_ENABLE,ST2_DIR,ST2_STEP,ST2_POS_LEFT,ST2_LIM1,ST2_LIM2,15.9,3.11,90,281, 794 ,1,1,30000,MOTOR_IDLE,0,0}, 
-                                     {ST1_ENABLE,ST1_DIR,ST1_STEP,ST1_POS_LEFT,ST1_LIM1,ST1_LIM2,15.9,3.11,90,204, 756, 0,1,30000,MOTOR_IDLE,0,0}  }; 
+MOTOR leftMotors[MOTORS_DEFINED] = { {ST3_ENABLE,ST3_DIR,ST3_STEP,ST3_POS_LEFT,ST3_LIM1,ST3_LIM2,19.0,3.08,90,214, 790, 0,1,90000,MOTOR_IDLE,0,0},
+                                     {ST2_ENABLE,ST2_DIR,ST2_STEP,ST2_POS_LEFT,ST2_LIM1,ST2_LIM2,15.9,3.08,90,240 ,770 ,1,1,90000,MOTOR_IDLE,0,0}, 
+                                     {ST1_ENABLE,ST1_DIR,ST1_STEP_LEFT,ST1_POS_LEFT,ST1_LIM1_LEFT,ST1_LIM2,15.9,3.08,90,250, 760, 0,1,90000,MOTOR_IDLE,0,0}  }; 
 
 MOTOR_LIMITS leftMotorLimits[MOTORS_DEFINED] = {  {90,270,0},{90,270,0},{90,270,0} }  ;
 
-MOTOR rightMotors[MOTORS_DEFINED] = { {ST3_ENABLE,ST3_DIR,ST3_STEP,ST3_POS_RIGHT,ST3_LIM1,ST3_LIM2,19.0,3.11,90,239, 791, 1,1,30000,MOTOR_IDLE,0,0},                                      
-                                      {ST2_ENABLE,ST2_DIR,ST2_STEP,ST2_POS_RIGHT,ST2_LIM1,ST2_LIM2,15.9,3.11,90,254, 809 ,0,1,30000,MOTOR_IDLE,0,0}, 
-                                      {ST1_ENABLE,ST1_DIR,ST1_STEP,ST1_POS_RIGHT,ST1_LIM1,ST1_LIM2,15.9,3.11,90,209, 780 ,1,1,30000,MOTOR_IDLE,0,0}  }; 
+MOTOR rightMotors[MOTORS_DEFINED] = { {ST3_ENABLE,ST3_DIR,ST3_STEP,ST3_POS_RIGHT,ST3_LIM1,ST3_LIM2,19.0,3.08,90,250, 802, 1,1,90000,MOTOR_IDLE,0,0},                                      
+                                      {ST2_ENABLE,ST2_DIR,ST2_STEP,ST2_POS_RIGHT,ST2_LIM1,ST2_LIM2,15.9,3.08,90,254, 808 ,0,1,90000,MOTOR_IDLE,0,0}, 
+                                      {ST1_ENABLE,ST1_DIR,ST1_STEP_RIGHT,ST1_POS_RIGHT,ST1_LIM1_RIGHT,ST1_LIM2,15.9,3.08,90,250, 804 ,1,1,90000,MOTOR_IDLE,0,0}  }; 
 
 
 MOTOR_LIMITS rightMotorLimits[MOTORS_DEFINED] = {  {90,270,0},{90,270,0},{90,270,0} }  ;
@@ -219,6 +222,7 @@ unsigned long lastTime;
 
 #define LEFT_ARM  1
 #define RIGHT_ARM 2
+#define END_AV_THRESHOLD 8
 
 char whichArm;
 
@@ -237,10 +241,9 @@ int servoAnalog[NUM_SERVOS] = {SV1_A,SV2_A,SV3_A,SV4_A};  // only two have analo
 
 int lastDistance;
 
-unsigned char lighttest;
-unsigned char lin;
-unsigned char llast = 0xff;
-unsigned long lighttestTime = 0;
+#define POSITION_READ_INTERVAL_MS 60
+long timeToReadPosition = 0;
+
 
 unsigned long avReadTime = 0;
 char avReadMode = MOTORS_DEFINED+1;
@@ -254,13 +257,13 @@ int shortModeLimit = 9999;
 int allowedJointOffset = 4;
 
 #define AV_ADR 1.05
-#define TICKS_PADDING 500
+#define TICKS_PADDING 1000
 
 double mycurrentposition[3];
 double* Robot_Plan;
 //double RobotPlan[6] = { 0 };
 
-#define MAX_TRAJ 20
+#define MAX_TRAJ 1
 #define NUMB_ANGLES 3
 
 double trajectory[MAX_TRAJ][NUMB_ANGLES];
@@ -288,20 +291,12 @@ char firstBusyCall = 0;
 unsigned long lastVerboseDebugTime = 0;
 #define DEBUG_PRINT_INTERVAL_MS 100  // Rate limit verbose debug to 10 Hz
 
-// Debug message buffer
-#define DEBUG_BUFFER_SIZE 32
-struct DebugMessage {
-  char msg[80];
-  unsigned long timestamp;
-};
-DebugMessage debugBuffer[DEBUG_BUFFER_SIZE];
-volatile int debugBufferHead = 0;
-volatile int debugBufferTail = 0;
-
-#define AV_ADJ 1.01
+#define AV_ADJ 1.05
 #define TICK_BUFFER 1
 
-VL53L0X sensor;
+VL53L1X sensor;
+
+
 
 double aabs(float absvalue) {
 	double myabsvalue;
@@ -318,70 +313,45 @@ double aabs(float absvalue) {
 int lastAnalogReads[MOTORS_DEFINED][ANALOG_READS];
 int analogReadCount[MOTORS_DEFINED];
 
-int getAvgAnalog(int motor,int port){
+int getAvgAnalog(int motor,int port,int oneRead){
 
   int val = analogRead(port);
   int s,t;
   
-  return val;
+ // return val;
   
-  Serial.print("ar :" +String(motor) + ":" + String(val));
+  //Serial.print("ar :" +String(motor) + ":" + String(val));
   
   lastAnalogReads[motor][analogReadCount[motor]++ & (ANALOG_READS-1)] = val;
-  
+
+  if (oneRead)
+    return val;
+    
   if (analogReadCount[motor] <= ANALOG_READS)
   {
-    Serial.println("");
+  //  Serial.println("");
     return val;
   }
-
   s = 0;
   for (int i=0; i < ANALOG_READS; i++)
   {
     s += lastAnalogReads[motor][i];
-    Serial.print(" (" + String(lastAnalogReads[motor][i]) + " " + String(s) + ")" );
+    //Serial.print(" (" + String(lastAnalogReads[motor][i]) + " " + String(s) + ")" );
   }
+  //Serial.println("");
 
    t = s/ANALOG_READS;
-  Serial.println(" sum "+ String(t));
+  //Serial.println(" sum "+ String(t));
    
   return t;
-  
- // return analogRead(port);
-  
-  for (int i= 0; i < 2; i++)
-  {
-      val +=analogRead(port);
-  }
-  return int(val/2);
+
 }
 
-// Queue a debug message to buffer (can be called from ISR)
-void queueDebugMessage(const char* msg) {
-  int nextHead = (debugBufferHead + 1) % DEBUG_BUFFER_SIZE;
-  if (nextHead != debugBufferTail) {
-    strncpy(debugBuffer[debugBufferHead].msg, msg, 79);
-    debugBuffer[debugBufferHead].msg[79] = 0;
-    debugBuffer[debugBufferHead].timestamp = millis();
-    debugBufferHead = nextHead;
-  }
-  // If buffer full, message is dropped (silent failure to avoid ISR blocking)
-}
-
-// Flush buffered debug messages (call from main loop)
-void flushDebugBuffer() {
-  while (debugBufferTail != debugBufferHead) {
-    Serial.print(debugBuffer[debugBufferTail].timestamp);
-    Serial.print(": ");
-    Serial.println(debugBuffer[debugBufferTail].msg);
-    debugBufferTail = (debugBufferTail + 1) % DEBUG_BUFFER_SIZE;
-  }
-}
 
 int getCurrentPosition(int motor )
 {
       int currentPosition;
-      motors[motor].currentAv = getAvgAnalog(motor,motors[motor].positionAnalogPin);
+      motors[motor].currentAv = getAvgAnalog(motor,motors[motor].positionAnalogPin,false);
       currentPosition = ((float(motors[motor].currentAv - motors[motor].avAtMinDegree) ) / motors[motor].avPerDegree) + motors[motor].minDegree;
 
       if(debugMode) {
@@ -458,7 +428,8 @@ int calculateExponentialDelay(int motor) {
 
 void motorTimer() {
   int m;
-
+  int t;
+  
   tickA++;
 
   if (tickA >=2000) //2000 x 250us = 500ms
@@ -474,17 +445,22 @@ void motorTimer() {
     if (motors[m].direction == MOTOR_IDLE)
       continue;
 
-    //  see if we are done
+    //  we are still moving, have we previously detected the end?
     
-    if ((motors[m].direction != MOTOR_IDLE) && (motors[m].stopFlag == STOP_NONE)  )
+    if (motors[m].stopFlag == STOP_NONE)
     {
-       // Check target position - currentAv should be updated from main loop, not ISR
+      // not yet at end
+#ifdef xx
+      
       if(motors[m].haltTrigger == HALT_LOW_AV)   // av is getting smaller as we rotate, stop when the current av is less than the target
       {
-         if ((motors[m].currentAv < motors[m].targetAv) && (motors[m].targetAv != 0xffff))
+         if ((motors[m].currentAv <= motors[m].targetAv) && (motors[m].targetAv != 0xffff))
          {
              // we are done
              motors[m].stopFlag = STOP_LOW_AV_TARGET;
+
+             if (debugMode)
+               Serial.println("lo " + String(m) + " c " +String(motors[m].currentAv) + "/t " + String(motors[m].targetAv));
              continue;
          }
       }
@@ -496,10 +472,24 @@ void motorTimer() {
           {
              // we are done
              motors[m].stopFlag = STOP_HIGH_AV_TARGET;
+
+             if (debugMode)
+               Serial.println("hi " + String(m) + " c " +String(motors[m].currentAv) + "/t " + String(motors[m].targetAv) );
              continue;
           }
       }
+#endif
+     t = abs(motors[m].currentAv - motors[m].targetAv);
+     
+      if (t < END_AV_THRESHOLD)
+      {
+        motors[m].stopFlag = STOP_HIGH_AV_TARGET;
 
+        if (debugMode)
+          Serial.println("co " + String(m) + " c " +String(motors[m].currentAv) + "/t " + String(motors[m].targetAv) + " d " + String (t));
+        continue;
+      }
+      
       // Calculate exponential delay and see if we should skip this tick interrupt
       if (motors[m].ticksSkip == 0)
       {
@@ -510,7 +500,8 @@ void motorTimer() {
       else
       // if (a motors[m].ticksSkip > 0)
       {
-        Serial.print('x');
+        if(debugMode)
+          Serial.print('x');
         // Skip this tick, decrement counter
         motors[m].ticksSkip--;
         continue;
@@ -524,7 +515,7 @@ void motorTimer() {
       }
 
       digitalWrite(motors[m].stepGpio, HIGH);
-      delayMicroseconds(100);
+      delayMicroseconds(300);
       digitalWrite(motors[m].stepGpio, LOW);        
     // Serial.print('-');
         
@@ -535,11 +526,7 @@ void motorTimer() {
       motors[m].position += (motors[m].direction == MOTOR_CW ? 1 : -1);
       motors[m].ticksPerformed++; 
         
-      // check if we are actually making progress
-        
-     //if ( abs(motors[m].currentAv -  motors[m].lastAv) <  1)
-      //   Serial.println('j');
-
+      
       motors[m].lastAv =  motors[m].currentAv;
 
      // Check acceleration state transitions
@@ -582,6 +569,14 @@ void motorTimer() {
   }
 }
 
+void lockArm(int m)
+{
+      digitalWrite(motors[m].enGpio,LOW) ;
+      motors[m].idleEnableTimeout = millis() + motors[m].idleEnableOnTimeMs;
+      motors[m].enableOn = 1;
+}
+
+
 int moveToPosition(int motor,int newPosition,int start)
 {
     int deltaAv,currentPosition;
@@ -607,26 +602,27 @@ int moveToPosition(int motor,int newPosition,int start)
         if(debugMode)
           Serial.println("   *tn: " + String(degreesFromMin) + " "+ String(motors[motor].minDegree) + " " + String(motors[motor].avPerDegree));
         
-        motors[motor].targetAv =  float(degreesFromMin) * motors[motor].avPerDegree * AV_ADJ + motors[motor].avAtMinDegree;
-        motors[motor].currentAv = getAvgAnalog(motor,motors[motor].positionAnalogPin);
+        motors[motor].targetAv =  float(degreesFromMin) * motors[motor].avPerDegree + motors[motor].avAtMinDegree;
+        motors[motor].currentAv = getAvgAnalog(motor,motors[motor].positionAnalogPin,false);
 
         // if we are going from a higher av to a lower one, make sure the target is not too low
         
         if ((motors[motor].currentAv > motors[motor].targetAv) && ( motors[motor].targetAv < motors[motor].avAtMinDegree))
         {
-          if (debugMode)
-                Serial.println("targetAv below min" + String(motors[motor].targetAv));
+          if (1)  //debugMode)
+            Serial.println("targetAv below min" + String(motors[motor].targetAv));
+          
           motors[motor].targetAv = motors[motor].avAtMinDegree;
         }
         else
         {
           // if we are going from a lower av to a higher one make sure the target is not too high
-         if ((motors[motor].currentAv < motors[motor].targetAv) && ( motors[motor].targetAv > motors[motor].avAtMaxDegree))
+          if ((motors[motor].currentAv < motors[motor].targetAv) && ( motors[motor].targetAv > motors[motor].avAtMaxDegree))
           {
-              if (debugMode)
-                Serial.println("targetAv above max " + String(motors[motor].targetAv) + " " + String( motors[motor].avAtMaxDegree));
-              motors[motor].targetAv = motors[motor].avAtMaxDegree;
-           }
+            if (1) //debugMode)
+              Serial.println("targetAv above max " + String(motors[motor].targetAv) + " " + String( motors[motor].avAtMaxDegree));
+            motors[motor].targetAv = motors[motor].avAtMaxDegree;
+          }
         }
         // see how much change av we have to make. it can be positive or negative
         
@@ -637,47 +633,42 @@ int moveToPosition(int motor,int newPosition,int start)
         if(debugMode)
           Serial.println("   *tgt aV: " + String(motors[motor].targetAv) + " cur aV " + String(motors[motor].currentAv) + " aV delta: " + String(deltaAv) + " ticks: " + String(motors[motor].moveTicks) + " dir " + String(motors[motor].reverse) );
  
-        if (!start)
-          return 1;
-          
-        // start all three motors now
         noInterrupts();
-        for (int m = 0 ; m < MOTORS_DEFINED; m++)
-        {
-          if(debugMode)
-            Serial.println("   *mt " + String(motors[m].moveTicks));
+
+        if(debugMode)
+            Serial.println("   *mt " + String(motors[motor].moveTicks));
           
-          if (motors[m].reverse == 0) 
-          {
-            if (motors[m].moveTicks >= 0)
+        if (motors[motor].reverse == 0) 
+        {
+            if (motors[motor].moveTicks >= 0)
             {
-              startMotor(m, ROT_CCW,aabs(motors[m].moveTicks),0);
-              motors[m].haltTrigger = HALT_HIGH_AV;
+              startMotor(motor, ROT_CCW,aabs(motors[motor].moveTicks),0);
+              motors[motor].haltTrigger = HALT_HIGH_AV;
             }
             else
             {
-              startMotor(m, ROT_CW,aabs(motors[m].moveTicks),0);
-              motors[m].haltTrigger = HALT_LOW_AV;
+              startMotor(motor, ROT_CW,aabs(motors[motor].moveTicks),0);
+              motors[motor].haltTrigger = HALT_LOW_AV;
             }
-          }
-          else
-          {
-            if (motors[m].moveTicks >= 0)
-            {
-              startMotor(m, ROT_CW,aabs(motors[m].moveTicks),0);
-              motors[m].haltTrigger = HALT_HIGH_AV;
-            }
-            else
-            {
-              startMotor(m, ROT_CCW,aabs(motors[m].moveTicks),0);
-              motors[m].haltTrigger = HALT_LOW_AV;
-            }
-          } 
         }
+        else
+        {
+            if (motors[motor].moveTicks >= 0)
+            {
+              startMotor(motor, ROT_CW,aabs(motors[motor].moveTicks),0);
+              motors[motor].haltTrigger = HALT_HIGH_AV;
+            }
+            else
+            {
+              startMotor(motor, ROT_CCW,aabs(motors[motor].moveTicks),0);
+              motors[motor].haltTrigger = HALT_LOW_AV;
+            }
+        } 
         interrupts();
 
   return 1;
 }
+
 
 void startMotor(int motor, int cmd,int ticks, int repeat)
 {
@@ -688,16 +679,19 @@ void startMotor(int motor, int cmd,int ticks, int repeat)
         {
          if(debugMode)
             Serial.println("Going CW "  + String(ticks));
+            
           motors[motor].direction = MOTOR_CW;
           digitalWrite(motors[motor].dirGpio,LOW) ; //(motors[motor].reverse ? HIGH: LOW));
         }
         else
         if (cmd == ROT_CCW)
         {  
-          motors[motor].direction = MOTOR_CCW;
-          digitalWrite(motors[motor].dirGpio,HIGH ); // (motors[motor].reverse ? LOW: HIGH));
           if(debugMode)
             Serial.println("Going CCW "  + String(ticks));
+          
+          motors[motor].direction = MOTOR_CCW;
+          digitalWrite(motors[motor].dirGpio,HIGH ); // (motors[motor].reverse ? LOW: HIGH));
+          
          }
          else {
           // Serial.println("*ERR - cmd");
@@ -747,18 +741,15 @@ int moveJoint(int joint,int arg)
 {
    int t;
    
-   if (arg == 0)
-     return 0;
-
-    if (arg != lastSetAngles[joint])
-      return 1; 
-
+   
     t = abs(abs(arg)-getCurrentPosition(joint));
     
-    if (t < allowedJointOffset)
+    if ((t < allowedJointOffset) || (arg == 0))
     {
       if (debugMode)
         Serial.println("m" + String(joint) + " same angle, close, no move req "+String(t));
+ 
+ 
       return 0;
     }
 
@@ -819,10 +810,17 @@ int runCommand() {
     break;
 
   case '3':  // vac sensor and light sensor
-    Serial.print  ("OK: ");
-    Serial.print  (getAvgAnalog(0,VAC_SENSOR_LEFT));
-    break;
+    while (1)
+    {
+    
+      Serial.println(analogRead(VAC_SENSOR_RIGHT));
+      if (arg1 == 0)
+        return;
+        
+      delay(1000);
 
+    }
+    
   case '4':  // vac 
     switch  (arg1) {
     case 1:
@@ -867,19 +865,22 @@ int runCommand() {
     break;
 
   case VACCUM_SENSOR:
-     Serial.println ("OK -- 0");  
+     Serial.print ("OK -- ");
+     Serial.println(  analogRead(VAC_SENSOR_RIGHT));
      break;
    
   case '5':
     while (1)
     {
+      int t[MOTORS_DEFINED];
+      
       Serial.print( "OK: ");
       for (i = 0; i < MOTORS_DEFINED; i ++)
       {
-        int t = getAvgAnalog(i,motors[i].positionAnalogPin);        
-        Serial.print( String(i) + ":" + String(t) + " ");
+         t[i] = getAvgAnalog(i,motors[i].positionAnalogPin,true);        
       }
-      Serial.println("");
+      Serial.println( "AV: ("+  String(t[0]) + ", "+  String(t[1]) + ", "+  String(t[2]) + ")");
+
       if (arg1 == 0)
         return 0;
       delay(1000);
@@ -929,7 +930,7 @@ int runCommand() {
 
   case '7':
     
-      Serial.println( "OK - " + String(getAvgAnalog(0,servoAnalog[0])) + " " + String(getAvgAnalog(0,servoAnalog[1])));
+      Serial.println( "OK - " + String(getAvgAnalog(0,servoAnalog[0],true)) + " " + String(getAvgAnalog(0,servoAnalog[1],true)));
       
     break;
   
@@ -994,7 +995,8 @@ int runCommand() {
     break;
     
   case DISTANCE:
-   lastDistance = sensor.readRangeSingleMillimeters();
+   
+   lastDistance = sensor.read(); //readRangeSingleMillimeters(true);
    Serial.println("OK " + String(lastDistance));
    return;
 
@@ -1003,7 +1005,18 @@ int runCommand() {
     break;
   
   case ATTACH_MODE:
-  case DOOR_POS:   
+  case DOOR_POS:
+/*
+  while (1){
+    digitalWrite(ST1_STEP,1);
+    digitalWrite(ST1_DIR,1);
+
+    delay(1);
+    digitalWrite(ST1_STEP,0);
+    digitalWrite(ST1_DIR,0);
+    delay(1);
+  }
+  */
     Serial.println ("OK");
     break;
 
@@ -1077,9 +1090,7 @@ int runCommand() {
 
         if ((motors[i].leaveEnabled) && (arg1 == 1))
         {
-          digitalWrite(motors[i].enGpio,LOW) ;
-          motors[i].idleEnableTimeout = millis() + motors[i].idleEnableOnTimeMs;
-          motors[i].enableOn = 1;
+         lockArm(i);
         }
         else
         {
@@ -1185,7 +1196,7 @@ int runCommand() {
 
     if (whichArm == RIGHT_ARM)
     {
-      Serial.println(" " + String (v) + " " + String (errorCode) + " " + String(random(0, 255)) + " " + String(vacValveOn) + " " + String(attachModeOn) + " " + String(random(0, 60)) + " " + String(3) + " " + String(lastDistance) );   // return  vac valve, attach mode, vac sensor, attach status
+      Serial.println(" " + String (v) + " " + String (errorCode) + " " + String(random(0, 255)) + " " + String(vacValveOn) + " " + String(attachModeOn) + " " + String(analogRead(VAC_SENSOR_RIGHT)) + " " + String(3) + " " + String(lastDistance) );   // return  vac valve, attach mode, vac sensor, attach status
     }else
     {
       Serial.println(" " + String (v) + " " + String (errorCode) + " " + String(basketOpen) );   // return just door position, for now a 0
@@ -1265,7 +1276,10 @@ void resetCommand() {
 void setup() {
 
     int i;
-  
+    uint8_t  width;
+    uint8_t  height;
+    
+    
     Serial.begin(38400);
     Wire.begin();
 
@@ -1331,16 +1345,31 @@ void setup() {
   vacValveOn = 0;
   attachModeOn = 0;
   errorCode = 99;
-  //   Serial.println(F(" boot VL53L0X"));
-
- sensor.setTimeout(500);
- sensor.setMeasurementTimingBudget(200000);
- 
-  if (!sensor.init())
+  
+  Wire.setClock(400000); // use 400 kHz I2C
+  sensor.setTimeout(500);
+  
+  //Serial.println(F(" booting VL53L1X"));
+  
+  if (!sensor.init(false))
   {
-    //Serial.println("Failed to detect and initialize sensor!");
-  }
+    // Serial.println("Failed to detect and initialize sensor!");
+ }
+ 
 
+  sensor.setDistanceMode(VL53L1X::Short);
+  sensor.setTimeout(500);
+  sensor.setMeasurementTimingBudget(33000);
+  sensor.startContinuous(100);
+ 
+  sensor.setROISize(4,4);
+ 
+  sensor.getROISize(&width,&height);
+
+ // Serial.println("ROI " + String(width) + " " + String(height));
+  
+  
+  
   Serial.print("* Arm Setup Done: Version " );
   Serial.print(String (version) + " ");
   Serial.print(__DATE__);
@@ -1457,36 +1486,78 @@ void loop() {
       }
     }
   }
-  
-  // Flush any buffered debug messages first
-  if (debugMode) {
-    flushDebugBuffer();
-  }
 
-  // Update analog readings for active motors (moved out of ISR for performance)
-  unsigned long now = millis();
-  bool timeForVerboseDebug = (debugMode >= 2) && (now - lastVerboseDebugTime >= DEBUG_PRINT_INTERVAL_MS);
+  int readPosition = millis() > timeToReadPosition;
+  
 
   for (int m=0; m < MOTORS_DEFINED; m++)
   {
     if (motors[m].direction != MOTOR_IDLE)
     {
       // Update current position from analog feedback
-      motors[m].currentAv = getAvgAnalog(m,motors[m].positionAnalogPin);
-
-      // Rate-limited verbose debug (max 10 Hz)
-      if (timeForVerboseDebug)
+          
+      if(readPosition)
       {
+        motors[m].currentAv = getAvgAnalog(m,motors[m].positionAnalogPin,false);
+      
+        // Rate-limited verbose debug (max 10 Hz)
+        if (debugMode)
+
+        {
         Serial.print("*AV M");
         Serial.print(m);
-        Serial.print(" cur:");
+        Serial.print(" c:");
         Serial.print(motors[m].currentAv);
-        Serial.print(" tgt:");
-        Serial.println(motors[m].targetAv);
+        Serial.print(" t:");
+        Serial.println (motors[m].targetAv);
+        //Serial.print(" time:");
+        //Serial.println(millis());
+        }
       }
+      // see if stopped
+      
+      if (motors[m].stopFlag != STOP_NONE)
+      {
+          // mark it stopped
+          
+          motors[m].direction = MOTOR_IDLE;
 
-      // Check if motor is making progress every ~100 loop iterations
+          if (debugMode)
+          {
+            const char* reason;
+            if (motors[m].stopFlag == STOP_OUT_OF_TICKS) reason = "[OUT_OF_TICKS]";
+            else if (motors[m].stopFlag == STOP_LOW_AV_TARGET) reason = "[LOW_AV_TARGET]";
+            else if (motors[m].stopFlag == STOP_HIGH_AV_TARGET) reason = "[AT TARGET]";
+            else if (motors[m].stopFlag == STOP_NO_PROGRESS) reason = "[NO_PROGRESS/STALLED]";
+            else reason = "[UNKNOWN]";
+
+            Serial.print("*STOP M");
+            Serial.print(m);
+            Serial.print(" ");
+            Serial.print(reason);
+            Serial.print(" tks:");
+            Serial.print(motors[m].ticksLeft);
+            Serial.print(" cv:");
+            Serial.print(motors[m].currentAv);
+            Serial.print(" tv: ");
+            Serial.println(motors[m].targetAv);
+          }
+      
+          // see if we should leave motor enabled
+          
+          if (motors[m].leaveEnabled)
+          {
+            lockArm(m);
+          }
+          else
+            digitalWrite(motors[m].enGpio,HIGH);
+          
+          continue;
+       }
+    
+      // since the motor is still moveing Check if making progress every ~100 loop iterations
       motors[m].progressCheckCounter++;
+      
       if (motors[m].progressCheckCounter >= 200)
       {
         // Check if AV has changed by at least 2 units (accounting for noise)
@@ -1495,7 +1566,7 @@ void loop() {
         if (avDelta < 2)
         {
           // Motor is not making progress - might be stalled or hitting obstacle
-          if (debugMode) {
+          if (0) { // {debugMode) {
             Serial.print("*WARNING M");
             Serial.print(m);
             Serial.print(" NO PROGRESS av:");
@@ -1524,18 +1595,7 @@ void loop() {
         motors[m].lastProgressCheckAv = motors[m].currentAv;
       }
     }
-  }
-
-  // Update timestamp after printing verbose debug
-  if (timeForVerboseDebug) {
-    lastVerboseDebugTime = now;
-  }
-
-  // do idle setting here since cannot to mcp calls from inside an ISR
-
-  for (int m=0; m < MOTORS_DEFINED;m++)
-  {
-    if (motors[m].direction == MOTOR_IDLE)
+    else
     {
       if (motors[m].leaveEnabled)
       {
@@ -1548,55 +1608,21 @@ void loop() {
                  //motors[m].idleEnableTimeout = millis() + (10000-motors[m].idleEnableOnTimeMs);
                  motors[m].enableOn = 0;
                  digitalWrite(motors[m].enGpio,HIGH);
+                 if (debugMode)
+                   Serial.println("unlock " + String(m));
               }
               else
               {
-                 //motors[m].idleEnableTimeout = millis() + (motors[m].idleEnableOnTimeMs);
-                 //motors[m].enableOn = 1;
-                // digitalWrite(motors[m].enGpio,LOW);
+                 //lockArm(m);
               }
           }
       }  
     }
-    else
-    {
-      if (motors[m].stopFlag != STOP_NONE)
-      {
-          if (debugMode)
-          {
-            const char* reason;
-            if (motors[m].stopFlag == STOP_OUT_OF_TICKS) reason = "[OUT_OF_TICKS]";
-            else if (motors[m].stopFlag == STOP_LOW_AV_TARGET) reason = "[LOW_AV_TARGET]";
-            else if (motors[m].stopFlag == STOP_HIGH_AV_TARGET) reason = "[HIGH_AV_TARGET]";
-            else if (motors[m].stopFlag == STOP_NO_PROGRESS) reason = "[NO_PROGRESS/STALLED]";
-            else reason = "[UNKNOWN]";
-
-            Serial.print("*STOP M");
-            Serial.print(m);
-            Serial.print(" ");
-            Serial.print(reason);
-            Serial.print(" ticks:");
-            Serial.print(motors[m].ticksLeft);
-            Serial.print(" av:");
-            Serial.print(motors[m].currentAv);
-            Serial.print("/");
-            Serial.println(motors[m].targetAv);
-          }
-          motors[m].direction = MOTOR_IDLE;
-
-          if (motors[m].leaveEnabled)
-          {
-              motors[m].idleEnableTimeout = millis() + (motors[m].idleEnableOnTimeMs);
-              motors[m].enableOn = 1;  
-              digitalWrite(motors[m].enGpio,LOW);
-          }
-          else
-            digitalWrite(motors[m].enGpio,HIGH);
-       }
-    }
   }
   
-  
+  if (readPosition)
+    timeToReadPosition = millis() + POSITION_READ_INTERVAL_MS;
+    
   if (trajectoryState == TRAJECTORY_ACTIVE)
   {
     // we are doing point move, we go on to the next point when all three motors are stopped
@@ -1636,7 +1662,7 @@ void loop() {
 
   if (limitTest)
   {
-     zin = (digitalRead(ST1_LIM1) << 5) + (digitalRead(ST1_LIM2) << 4) + (digitalRead(ST2_LIM1) << 3) + (digitalRead(ST2_LIM2) << 2) + (digitalRead(ST3_LIM1) << 1) + (digitalRead(ST3_LIM2)) ;
+     zin = (digitalRead(ST1_LIM1_LEFT) << 5) + (digitalRead(ST1_LIM2) << 4) + (digitalRead(ST2_LIM1) << 3) + (digitalRead(ST2_LIM2) << 2) + (digitalRead(ST3_LIM1) << 1) + (digitalRead(ST3_LIM2)) ;
      if (1) { //zin != zlast){
        Serial.print("L: ");
        Serial.println(zin,HEX);
@@ -1652,15 +1678,15 @@ void loop() {
     switch (avReadMode)
     {
     case 0:
-      Serial.println (getAvgAnalog(0,ST1_POS_LEFT));
+      Serial.println (getAvgAnalog(0,ST1_POS_LEFT,true));
       break;
       
     case 1:
-      Serial.println (getAvgAnalog(0,ST2_POS_LEFT));
+      Serial.println (getAvgAnalog(0,ST2_POS_LEFT,true));
       break;
       
     case 2:
-      Serial.println (getAvgAnalog(0,ST3_POS_LEFT));
+      Serial.println (getAvgAnalog(0,ST3_POS_LEFT,true));
       break;
 
     default:
