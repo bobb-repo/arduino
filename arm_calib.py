@@ -22,19 +22,30 @@ MOTOR initialisers.
 USING THIS ON THE LEFT ARM
 --------------------------
 The right arm was calibrated 2026-09-14; the left has never been done and
-`leftMotors[]` still carries the original numbers. Four things to change first:
+`leftMotors[]` still carries the original numbers.
 
-  1. `PORT` below, or pass --port. The left arm is a different device node.
-  2. `CURRENT` below holds the RIGHT arm's constants. Replace it with the values
-     from `leftMotors[]` -- it is only used to print "currently X" next to each
-     result, but a stale table makes the comparison meaningless.
-  3. Send `a l` to the board first. Both arms run the same image and the arm is
-     selected at startup by that one command, which nothing verifies. Calibrate
-     an arm that thinks it is the other one and every number will be wrong.
-  4. Confirm which joints stop at 90/270 on the LEFT arm before using `span`.
-     On the right arm only joint 2 does; joints 0 and 1 travel beyond, so `span`
-     refuses them unless --low-deg/--high-deg are given. Do not assume the left
-     arm is mechanically identical.
+    ./arm_calib.py --port /dev/left_arm --arm l status
+
+`--arm l` handles the two things that used to be manual: it sends `a l`, and it
+picks CURRENT_BY_ARM["l"] so "currently X" compares against leftMotors[].
+
+It also VERIFIES the switch took, which matters more than it looks. The board
+boots as the RIGHT arm, so a left session that skips this silently calibrates
+against rightMotors[] -- and since the right arm is now calibrated and the left
+is not, the numbers look plausible while being completely wrong. Worse, the
+firmware's `a` command is one-way: a second `a l` answers ERR, so it cannot be
+sent twice to be sure. The status line is the only honest witness -- the right
+arm emits 11 fields, the left 6 -- and that is what is checked.
+
+Still your job on the left arm: confirm which joints stop at 90/270 before using
+`span`. On the right arm only joint 2 does; joints 0 and 1 travel beyond, so
+`span` refuses them unless --low-deg/--high-deg are given.
+
+If the arms really are mechanically identical and differ only in pot offset,
+their mechanical stops sit at the same ANGLES. That gives joints 0 and 1 a
+reference without anyone eyeballing anything: creep the RIGHT arm onto its stops
+and convert those AVs to angles with its known-good calibration, then creep the
+LEFT arm onto the same stops and fit against those angles.
 
 WHICH MODE TO USE
 -----------------
@@ -85,9 +96,12 @@ END_AV_THRESHOLD = 5         # firmware's arrival window, AV counts
 JOINT_MIN_DEG = 90           # motorLimits lower bound
 JOINT_MAX_DEG = 270          # motorLimits upper bound
 
-# Current constants, right arm, from the MOTOR initialisers. Used only to show
-# what changed -- nothing here depends on them being correct.
-CURRENT = {
+# Current constants from the MOTOR initialisers, per arm. Used to show what
+# changed, and to bound the plausibility check -- nothing here depends on them
+# being correct, but they must belong to the arm actually being talked to.
+CURRENT_BY_ARM = {}
+
+CURRENT_BY_ARM["r"] = {
     # All three measured 2026-09-14. Joints 0 and 1 from marks at 90 and 270
     # deg; joint 2 from 'span', which reads its actual end stops -- only joint 2
     # stops at 90/270, so only joint 2 can be done that way.
@@ -95,11 +109,29 @@ CURRENT = {
     1: dict(ticksPerDegree=15.9, avPerDegree=2.617, avAtMin=248, avAtMax=719),
     2: dict(ticksPerDegree=18.0, avPerDegree=2.983, avAtMin=222, avAtMax=759),
 }
+
+# Left arm: still the ORIGINAL uncalibrated numbers from leftMotors[]. These are
+# stop-to-stop readings misread as the AV at 90/270 (see the firmware comment),
+# so they are wrong in the same way the right arm's were. They are here only to
+# bound the plausibility check and to print "currently X" beside each result.
+CURRENT_BY_ARM["l"] = {
+    0: dict(ticksPerDegree=19.0, avPerDegree=3.08, avAtMin=188, avAtMax=760),
+    1: dict(ticksPerDegree=15.9, avPerDegree=3.08, avAtMin=211, avAtMax=770),
+    2: dict(ticksPerDegree=15.0, avPerDegree=3.08, avAtMin=250, avAtMax=790),
+}
+
+# Rebound by main() once --arm is known. Module-level so av() can reach it.
+CURRENT = CURRENT_BY_ARM["r"]
+
 PLAUSIBLE_MARGIN = 120       # matches the firmware's AV_SANITY_MARGIN
 
 
+class ArmSelectError(RuntimeError):
+    pass
+
+
 class Arm:
-    def __init__(self, port=PORT, baud=BAUD):
+    def __init__(self, port=PORT, baud=BAUD, arm="r"):
         os.system(f"stty -F {port} {baud} raw -echo")
         self.fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
         # Assert DTR without pulsing it low: a low pulse reboots the board and
@@ -107,6 +139,49 @@ class Arm:
         fcntl.ioctl(self.fd, termios.TIOCMBIS, struct.pack("I", termios.TIOCM_DTR))
         time.sleep(1.2)
         self._drain(0.8)
+        self.arm = arm
+        self._select_arm(arm)
+
+    def _status_fields(self):
+        """Field count of the 's' reply: 11 for the right arm, 6 for the left."""
+        for line in self.cmd("s").splitlines():
+            line = line.strip()
+            if line.startswith("*"):
+                continue
+            fields = line.split()
+            if len(fields) >= 3 and all(f.lstrip("-").isdigit() for f in fields[:3]):
+                return len(fields)
+        return None
+
+    def _select_arm(self, arm):
+        """Put the board on the right MOTOR table, and PROVE it took.
+
+        Both arms run the same image and boot as the RIGHT arm, so a left-arm
+        session that skips this silently calibrates against rightMotors[]. The
+        firmware's 'a' command is also one-way -- a second 'a l' answers ERR --
+        so it cannot simply be sent twice to be sure. The status line is the
+        only honest witness: the right arm emits 11 fields, the left 6.
+        """
+        want = 6 if arm == "l" else 11
+        seen = self._status_fields()
+
+        if seen == want:
+            return                       # already correct (left after an 'a l')
+
+        if arm == "l":
+            reply = self.cmd("a l", settle=1.5)
+            seen = self._status_fields()
+            if seen != want:
+                raise ArmSelectError(
+                    f"'a l' did not take: status still shows {seen} fields, "
+                    f"expected {want}. Reply was {reply!r}. The board boots as "
+                    f"the RIGHT arm and 'a l' only works once per reset, so "
+                    f"power-cycle it and retry rather than calibrating now.")
+        else:
+            raise ArmSelectError(
+                f"asked for the right arm but status shows {seen} fields "
+                f"(expected {want}). The board has already been switched to the "
+                f"left arm; that is one-way, so reset it before continuing.")
 
     def close(self):
         os.close(self.fd)
@@ -517,6 +592,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--port", default=PORT)
+    parser.add_argument("--arm", choices=("r", "l"), default="r",
+                        help="which arm this board is. Both arms run the same "
+                             "image and boot as the right arm; 'l' sends 'a l' "
+                             "and verifies it took. Also picks which constants "
+                             "are shown as 'currently'.")
     sub = parser.add_subparsers(dest="mode", required=True)
 
     sub.add_parser("status", help="positions, AV, currents, driver faults")
@@ -557,7 +637,16 @@ def main():
 
     args = parser.parse_args()
 
-    arm = Arm(args.port)
+    global CURRENT
+    CURRENT = CURRENT_BY_ARM[args.arm]
+
+    try:
+        arm = Arm(args.port, arm=args.arm)
+    except ArmSelectError as exc:
+        print(f"arm selection failed: {exc}")
+        return 1
+    print(f"[{ 'LEFT' if args.arm == 'l' else 'RIGHT' } arm on {args.port}, "
+          f"confirmed by the status field count]\n")
     try:
         {"status": do_status, "scale": do_scale, "span": do_span,
          "accuracy": do_accuracy, "mark": do_mark, "fit": do_fit,
