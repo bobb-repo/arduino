@@ -393,8 +393,28 @@ char tmcReady[MOTORS_DEFINED] = { 0, 0, 0 };
  * prefer the 't' command's braking mode, which damps the fall rather than
  * allowing a free one.
  */
+/* LEFT ARM joint 1 position sense: TRIED A3, REVERTED to A1. 2026-09-16.
+ *
+ * A1 (ST2_POS) reads a stable 0-4 across 120 deg of travel in both directions
+ * with the joint nowhere near a stop, so joint 1's pot signal is not reaching
+ * the ADC. A3 (ST1_POS_BU) was tried as an alternative input and MUST NOT be
+ * used: measured on hardware, moving joint 0 by 150 ticks changed A3 by +46
+ * counts -- exactly tracking A0 -- while moving joint 1 changed it by 1-6
+ * counts, i.e. noise. A3 is on the /ST1-POS net with A0, as r3-2.net says.
+ *
+ * It read a plausible moving number, which is why this needed a real test: with
+ * invertedPosition = 1 the reported value even LOOKED independent (j0 raw 561,
+ * j1 reported 463, and 1023-463 = 560). Undoing the inversion showed both pins
+ * sitting on the same volts. "It reads a number" is not evidence; the
+ * discriminator is whether it tracks its OWN joint and not the other one.
+ *
+ * There is no firmware workaround. A4 (ST2_POS_BU) is on the SAME net as A1, so
+ * it is not a spare input, and A3/A5 belong to joints 0 and 2. The fix is
+ * physical: joint 1's pot at J1 pin 14, most likely its +5V lead, since a
+ * floating wiper on a high-Z input reads erratically rather than a stable 0.
+ */
 MOTOR leftMotors[MOTORS_DEFINED] = { {ST1_ENABLE,ST1_DIR,ST1_STEP,ST1_POS,ST1_PDN,ST1_DIAG,19.0,3.08,90,188, 760, 0,1,1,0,MOTOR_IDLE,0},
-                                     {ST2_ENABLE,ST2_DIR,ST2_STEP,ST2_POS,ST2_PDN,ST2_DIAG,15.9,3.08,90,211 ,770 ,1,1,1,0,MOTOR_IDLE,0}, 
+                                     {ST2_ENABLE,ST2_DIR,ST2_STEP,ST2_POS,ST2_PDN,ST2_DIAG,15.9,3.08,90,211 ,770 ,1,1,1,0,MOTOR_IDLE,0},
                                      {ST3_ENABLE,ST3_DIR,ST3_STEP,ST3_POS,ST3_PDN,ST3_DIAG,15.0,3.08,90,250, 790, 0,1,1,0,MOTOR_IDLE,0} };
                                      
 MOTOR_LIMITS leftMotorLimits[MOTORS_DEFINED] = {  {90,270},{90,270},{90,270} }  ;
