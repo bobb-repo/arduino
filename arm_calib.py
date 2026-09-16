@@ -457,22 +457,41 @@ def do_accuracy(arm, args):
 
 # ----------------------------------------------------------- free / hold
 
-def do_free(arm, _args):
-    """Release all joints so they can be positioned by hand.
+def do_free(arm, args):
+    """Release joints so they can be positioned by hand.
 
     For calibration you want the joint at a KNOWN angle, which means putting it
     there yourself against whatever reference you are using. Commanding it with
     'p' would place it using the very constants you are trying to measure.
 
-    Joints are limp afterwards and will fall under load -- support anything that
-    can drop before running this.
+    Prefer --joint N. It freewheels ONE joint through the driver's standstill
+    mode and leaves the other two holding, so the arm keeps its shape while you
+    position the part being marked. Releasing everything makes the arm sag,
+    which risks a drop and disturbs joints already placed.
     """
-    print(arm.cmd("k 0", settle=1.5))
-    print("all joints released - they are limp and can fall")
+    if args.joint is None:
+        print(arm.cmd("k 0", settle=1.5))
+        print("ALL joints released - the arm is limp and can fall")
+        print("  (--joint N releases one and leaves the rest holding)")
+        return
+
+    print(arm.cmd(f"t {args.joint} 1", settle=1.0))
+    others = [j for j in range(3) if j != args.joint]
+    print(f"joint {args.joint} freewheeling; joints {others} still holding")
+    print(f"  re-grip with:  hold --joint {args.joint}")
 
 
-def do_hold(arm, _args):
-    """Energise and hold. Use after positioning by hand, before 'mark'."""
+def do_hold(arm, args):
+    """Energise and hold. Use after positioning by hand, before 'mark'.
+
+    --joint N re-grips just the joint that 'free --joint N' released, without
+    disturbing the other two.
+    """
+    if getattr(args, "joint", None) is not None:
+        print(arm.cmd(f"t {args.joint} 0", settle=1.0))
+        print(f"joint {args.joint} back to normal hold current")
+        print("positions:", arm.degrees())
+        return
     print(arm.cmd("k 1", settle=1.5))
     print("all joints holding")
     print("positions:", arm.degrees())
@@ -484,12 +503,30 @@ MARKS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                           "arm_calib_marks.json")
 
 
+def _mark_key(which, joint):
+    """Marks are stored per ARM as well as per joint ("l1", "r0").
+
+    Originally they were keyed by joint alone, which was fine while only the
+    right arm existed. It is not fine now: left-arm marks would append to the
+    right arm's list and 'fit' would mix two arms' readings into a single line,
+    producing a confident fit from data that never came from one machine.
+    """
+    return f"{which}{joint}"
+
+
 def _load_marks():
     try:
         with open(MARKS_FILE) as handle:
-            return json.load(handle)
+            marks = json.load(handle)
     except (OSError, ValueError):
         return {}
+
+    # Migrate the pre-per-arm format: bare "0"/"1"/"2" are right-arm marks,
+    # the right arm being the only one ever calibrated that way.
+    for joint in ("0", "1", "2"):
+        if joint in marks:
+            marks.setdefault(f"r{joint}", []).extend(marks.pop(joint))
+    return marks
 
 
 def _save_marks(marks):
@@ -521,12 +558,12 @@ def do_mark(arm, args):
         return
 
     marks = _load_marks()
-    entries = marks.setdefault(str(joint), [])
+    entries = marks.setdefault(_mark_key(arm.arm, joint), [])
     entries.append({"degrees": args.degrees, "av": value})
     _save_marks(marks)
 
-    print(f"joint {joint}: recorded {args.degrees} deg = AV {value}   "
-          f"({len(entries)} mark(s) now)")
+    print(f"{arm.arm} arm joint {joint}: recorded {args.degrees} deg = "
+          f"AV {value}   ({len(entries)} mark(s) now)")
     if len(entries) < 2:
         print("  need at least two at different angles before 'fit'")
 
@@ -534,9 +571,10 @@ def do_mark(arm, args):
 def do_fit(arm, args):
     """Least-squares fit over the recorded marks -> avPerDegree, avAtMinDegree."""
     joint = args.joint
-    entries = _load_marks().get(str(joint), [])
+    entries = _load_marks().get(_mark_key(arm.arm, joint), [])
     if len(entries) < 2:
-        print(f"joint {joint}: need at least two marks, have {len(entries)}")
+        print(f"{arm.arm} arm joint {joint}: need at least two marks, "
+              f"have {len(entries)}")
         return
 
     degrees = [e["degrees"] for e in entries]
@@ -551,7 +589,7 @@ def do_fit(arm, args):
          if degrees[i] != degrees[j]])
     intercept = statistics.mean([a - slope * d for a, d in zip(avs, degrees)])
 
-    print(f"joint {joint}: {len(entries)} marks")
+    print(f"{arm.arm} arm joint {joint}: {len(entries)} marks")
     print(f"  {'measured deg':>12} {'AV':>6} {'fitted AV':>10} {'residual':>9}")
     worst = 0.0
     for d, a in sorted(zip(degrees, avs)):
@@ -572,19 +610,24 @@ def do_fit(arm, args):
         print("    measurements, or the pot is non-linear over that range")
 
 
-def do_marks(_arm, args):
+def do_marks(arm, args):
     marks = _load_marks()
     if args.clear is not None:
-        marks.pop(str(args.clear), None)
+        key = _mark_key(arm.arm, args.clear)
+        if marks.pop(key, None) is None:
+            print(f"no marks for {arm.arm} arm joint {args.clear}")
+            return
         _save_marks(marks)
-        print(f"cleared marks for joint {args.clear}")
+        print(f"cleared marks for {arm.arm} arm joint {args.clear}")
         return
     if not marks:
         print("no marks recorded")
         return
-    for joint in sorted(marks):
-        print(f"joint {joint}:")
-        for e in marks[joint]:
+    for key in sorted(marks):
+        which, joint = key[0], key[1:]
+        here = "   <- this arm" if which == arm.arm else ""
+        print(f"{which} arm joint {joint}:{here}")
+        for e in marks[key]:
             print(f"   {e['degrees']:>7.1f} deg = AV {e['av']}")
 
 
@@ -616,8 +659,13 @@ def main():
     p.add_argument("--high-deg", type=float, default=JOINT_MAX_DEG,
                    help="true angle of the high stop (only 270 on joint 2)")
 
-    sub.add_parser("free", help="release joints for positioning by hand")
-    sub.add_parser("hold", help="energise and hold")
+    p = sub.add_parser("free", help="release joints for positioning by hand")
+    p.add_argument("--joint", type=int, choices=(0, 1, 2), default=None,
+                   help="release only this joint; the others keep holding")
+
+    p = sub.add_parser("hold", help="energise and hold")
+    p.add_argument("--joint", type=int, choices=(0, 1, 2), default=None,
+                   help="re-grip only this joint")
 
     p = sub.add_parser("mark", help="record current AV as a known angle")
     p.add_argument("joint", type=int, choices=(0, 1, 2))
