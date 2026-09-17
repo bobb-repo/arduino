@@ -444,8 +444,16 @@ MOTOR leftMotors[MOTORS_DEFINED] = { {ST1_ENABLE,ST1_DIR,ST1_STEP,ST1_POS,ST1_PD
  * AV with this arm's calibration. They differ per arm, which is why these tables
  * are separate.
  *
- *   LEFT  joint 1 stops at 70.9 and 294.6 deg
- *   RIGHT joint 1 stops at 59.8 and 333.0 deg
+ *   LEFT  joint 0 stops at 82.1 and 268.7 deg   -> 90 .. 260
+ *   LEFT  joint 1 stops at 70.9 and 294.6 deg   -> 79 .. 286
+ *   RIGHT joint 0 high stop at 298.0 deg        -> 90 .. 290 (low not measured)
+ *   RIGHT joint 1 stops at 59.8 and 333.0 deg   -> 68 .. 325
+ *
+ * Note LEFT joint 0's upper limit went DOWN, 270 -> 260. Its high stop is at
+ * 268.7 deg, INSIDE the old limit, so commanding 270 drove the joint into its
+ * own stop -- the one case here where the measurement removed travel rather
+ * than adding it. Its low stop at 82.1 already left the 8 deg wanted, so that
+ * side is unchanged at 90.
  *
  * 8 degrees of margin is held off each stop. That is not arbitrary: joint 1's
  * worst observed landing error is ~6 deg, the arrival deadband is ~2 deg, and
@@ -455,7 +463,7 @@ MOTOR leftMotors[MOTORS_DEFINED] = { {ST1_ENABLE,ST1_DIR,ST1_STEP,ST1_POS,ST1_PD
  * stopFlag assignment commented out, so a move that reaches a stop grinds at
  * full current until its tick budget runs out, losing steps silently.
  */
-MOTOR_LIMITS leftMotorLimits[MOTORS_DEFINED] = {  {90,270},{79,286},{90,270} }  ;
+MOTOR_LIMITS leftMotorLimits[MOTORS_DEFINED] = {  {90,260},{79,286},{90,270} }  ;
 
 /* Joints 0 and 1 measured on the bench 2026-09-14 with arm_calib.py, two marks
  * each at 90 and 270 degrees (the 180 mark was eyeballed and discarded). The
@@ -495,7 +503,7 @@ MOTOR rightMotors[MOTORS_DEFINED] = { {ST1_ENABLE,ST1_DIR,ST1_STEP,ST1_POS,ST1_P
                                       {ST2_ENABLE,ST2_DIR,ST2_STEP,ST2_POS,ST2_PDN,ST2_DIAG,18.0,2.617,90,248, 719 ,0,0,1,0,MOTOR_IDLE,0},
                                       {ST3_ENABLE,ST3_DIR,ST3_STEP,ST3_POS,ST3_PDN,ST3_DIAG,18.0,2.983,90,222, 759, 1,0,1, 0,MOTOR_IDLE,0}  };
 
-MOTOR_LIMITS rightMotorLimits[MOTORS_DEFINED] = {  {90,270},{68,325},{90,270} }  ;
+MOTOR_LIMITS rightMotorLimits[MOTORS_DEFINED] = {  {90,290},{68,325},{90,270} }  ;
 
 MOTOR *motors;
 MOTOR_LIMITS *motorLimits;
