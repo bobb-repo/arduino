@@ -413,9 +413,31 @@ char tmcReady[MOTORS_DEFINED] = { 0, 0, 0 };
  * physical: joint 1's pot at J1 pin 14, most likely its +5V lead, since a
  * floating wiper on a high-Z input reads erratically rather than a stable 0.
  */
-MOTOR leftMotors[MOTORS_DEFINED] = { {ST1_ENABLE,ST1_DIR,ST1_STEP,ST1_POS,ST1_PDN,ST1_DIAG,19.0,3.08,90,188, 760, 0,1,1,0,MOTOR_IDLE,0},
-                                     {ST2_ENABLE,ST2_DIR,ST2_STEP,ST2_POS,ST2_PDN,ST2_DIAG,15.9,3.08,90,211 ,770 ,1,1,1,0,MOTOR_IDLE,0},
-                                     {ST3_ENABLE,ST3_DIR,ST3_STEP,ST3_POS,ST3_PDN,ST3_DIAG,15.0,3.08,90,250, 790, 0,1,1,0,MOTOR_IDLE,0} };
+/* LEFT ARM calibrated on hardware 2026-09-17. Joints 0 and 1 from marks set by
+ * hand at 90 and 270 deg; joint 2 from 'span', which creeps onto its actual end
+ * stops -- only joint 2 stops at 90/270, so only it can be done without a human
+ * reference. Every mark was taken with a 1-count spread.
+ *
+ * The three slopes agree within 3% (3.156 / 3.089 / 3.072), and joint 2's came
+ * from physical stops with no judgement involved, which corroborates the two
+ * hand-marked joints. Contrast the right arm, whose slopes spread much wider
+ * (2.750 / 2.617 / 2.983) -- the arms are NOT interchangeable, and neither
+ * arm's numbers may be copied to the other.
+ *
+ * Read the identification note in arm_calib.py before recalibrating either arm.
+ * Two sessions were lost to calibrating the wrong one: port names cannot
+ * identify an arm, because udev maps by USB socket and ttyUSB<n> moves on any
+ * replug. The left arm has no VL53L1X fitted, so sensor.init() fails and the
+ * library prints "f0" at startup. That marker follows the BOARD, and the board
+ * is bolted to its arm.
+ *
+ * ticksPerDegree is unmeasured on this arm and left at its original values.
+ * They only size the tick budget for a move that terminates on AV, so a value
+ * that is too high costs nothing while one too low truncates the move short.
+ */
+MOTOR leftMotors[MOTORS_DEFINED] = { {ST1_ENABLE,ST1_DIR,ST1_STEP,ST1_POS,ST1_PDN,ST1_DIAG,19.0,3.156,90,216, 784, 0,1,1,0,MOTOR_IDLE,0},
+                                     {ST2_ENABLE,ST2_DIR,ST2_STEP,ST2_POS,ST2_PDN,ST2_DIAG,15.9,3.089,90,187 ,743 ,1,1,1,0,MOTOR_IDLE,0},
+                                     {ST3_ENABLE,ST3_DIR,ST3_STEP,ST3_POS,ST3_PDN,ST3_DIAG,18.0,3.072,90,201, 754, 0,1,1,0,MOTOR_IDLE,0} };
                                      
 MOTOR_LIMITS leftMotorLimits[MOTORS_DEFINED] = {  {90,270},{90,270},{90,270} }  ;
 

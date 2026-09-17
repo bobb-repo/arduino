@@ -710,8 +710,37 @@ def do_mark(arm, args):
     and any non-linearity in the pot.
     """
     joint = args.joint
-    value = require_av(arm, joint, "record a mark")
-    if value is None:
+
+    # Re-grip first, then settle, then sample -- all in ONE connection.
+    #
+    # This used to trust a reading taken by a previous command. Twice that
+    # recorded the wrong number: a separate 'hold' and verification read, then
+    # 'mark' seconds later over a new connection, and the joint moved in the
+    # gap. Once it captured a 270 deg position and stored it as 90. The reading
+    # that gets stored must be the one taken at the instant of storing, and it
+    # must be demonstrably still.
+    if not args.assume_held:
+        arm.cmd(f"t {joint} 0", settle=1.0)     # normal hold current
+        time.sleep(args.settle)
+
+    samples = []
+    for _ in range(args.samples):
+        one = arm.av()[joint]
+        if one is not None:
+            samples.append(one)
+    if len(samples) < 3:
+        print(f"joint {joint}: too few plausible readings ({len(samples)}) - "
+              f"check the pot before marking")
+        return
+
+    spread = max(samples) - min(samples)
+    value = int(statistics.median(samples))
+    print(f"joint {joint}: {len(samples)} samples, min {min(samples)} "
+          f"max {max(samples)} spread {spread}, median {value}")
+    if spread > args.max_spread:
+        print(f"  REFUSING to mark: spread {spread} counts exceeds "
+              f"{args.max_spread}. The joint is still moving or the pot is "
+              f"unstable. Let it settle, or re-seat the joint, then retry.")
         return
 
     marks = _load_marks()
@@ -838,6 +867,13 @@ def main():
     p = sub.add_parser("mark", help="record current AV as a known angle")
     p.add_argument("joint", type=int, choices=(0, 1, 2))
     p.add_argument("degrees", type=float, help="angle you measured externally")
+    p.add_argument("--settle", type=float, default=6.0,
+                   help="seconds to wait after re-gripping, before sampling")
+    p.add_argument("--samples", type=int, default=20)
+    p.add_argument("--max-spread", type=int, default=6,
+                   help="refuse to mark if the readings vary more than this")
+    p.add_argument("--assume-held", action="store_true",
+                   help="skip the re-grip; the joint is already holding")
 
     p = sub.add_parser("fit", help="fit recorded marks -> avPerDegree")
     p.add_argument("joint", type=int, choices=(0, 1, 2))
