@@ -439,7 +439,23 @@ MOTOR leftMotors[MOTORS_DEFINED] = { {ST1_ENABLE,ST1_DIR,ST1_STEP,ST1_POS,ST1_PD
                                      {ST2_ENABLE,ST2_DIR,ST2_STEP,ST2_POS,ST2_PDN,ST2_DIAG,15.9,3.089,90,187 ,743 ,1,1,1,0,MOTOR_IDLE,0},
                                      {ST3_ENABLE,ST3_DIR,ST3_STEP,ST3_POS,ST3_PDN,ST3_DIAG,18.0,3.072,90,201, 754, 0,1,1,0,MOTOR_IDLE,0} };
                                      
-MOTOR_LIMITS leftMotorLimits[MOTORS_DEFINED] = {  {90,270},{90,270},{90,270} }  ;
+/* Commanded-angle bounds. Joints 0 and 2 stay at 90..270; joint 1's real stops
+ * were measured on hardware 2026-09-17 by creeping onto them and converting the
+ * AV with this arm's calibration. They differ per arm, which is why these tables
+ * are separate.
+ *
+ *   LEFT  joint 1 stops at 70.9 and 294.6 deg
+ *   RIGHT joint 1 stops at 59.8 and 333.0 deg
+ *
+ * 8 degrees of margin is held off each stop. That is not arbitrary: joint 1's
+ * worst observed landing error is ~6 deg, the arrival deadband is ~2 deg, and
+ * the stop itself is only located to ~4 deg (the final creep step stalled 9-14
+ * counts out). It matters because NOTHING CATCHES A JAM -- the no-progress
+ * detector in the timer loop computes its result and then discards it, with the
+ * stopFlag assignment commented out, so a move that reaches a stop grinds at
+ * full current until its tick budget runs out, losing steps silently.
+ */
+MOTOR_LIMITS leftMotorLimits[MOTORS_DEFINED] = {  {90,270},{79,286},{90,270} }  ;
 
 /* Joints 0 and 1 measured on the bench 2026-09-14 with arm_calib.py, two marks
  * each at 90 and 270 degrees (the 180 mark was eyeballed and discarded). The
@@ -476,10 +492,10 @@ MOTOR_LIMITS leftMotorLimits[MOTORS_DEFINED] = {  {90,270},{90,270},{90,270} }  
  * which is the truncating direction, so it is now 18.0.
  */
 MOTOR rightMotors[MOTORS_DEFINED] = { {ST1_ENABLE,ST1_DIR,ST1_STEP,ST1_POS,ST1_PDN,ST1_DIAG,19.0,2.750,90,253, 748 ,1,0,1,0,MOTOR_IDLE,0},
-                                      {ST2_ENABLE,ST2_DIR,ST2_STEP,ST2_POS,ST2_PDN,ST2_DIAG,15.9,2.617,90,248, 719 ,0,0,1,0,MOTOR_IDLE,0},
+                                      {ST2_ENABLE,ST2_DIR,ST2_STEP,ST2_POS,ST2_PDN,ST2_DIAG,18.0,2.617,90,248, 719 ,0,0,1,0,MOTOR_IDLE,0},
                                       {ST3_ENABLE,ST3_DIR,ST3_STEP,ST3_POS,ST3_PDN,ST3_DIAG,18.0,2.983,90,222, 759, 1,0,1, 0,MOTOR_IDLE,0}  };
 
-MOTOR_LIMITS rightMotorLimits[MOTORS_DEFINED] = {  {90,270},{90,270},{90,270} }  ;
+MOTOR_LIMITS rightMotorLimits[MOTORS_DEFINED] = {  {90,270},{68,325},{90,270} }  ;
 
 MOTOR *motors;
 MOTOR_LIMITS *motorLimits;
@@ -532,18 +548,21 @@ volatile unsigned int tickA = 0;
    to catch a railed input, which reads near 0 or near 1023. See the check in
    moveToPosition().
 
-   Raised 60 -> 120 on 2026-09-14, when joints 0 and 1 were recalibrated. The
-   span avAtMinDegree..avAtMaxDegree is NOT the mechanical range -- it is 90..270
-   degrees, and on joints 0 and 1 the stops lie outside it (joint 1's upper stop
-   is roughly 34 degrees past 270). At 60 counts a joint parked on its own stop
-   at power-up would have read as a sensor fault and refused to move. 120 counts
-   is ~44 degrees on joint 0 and still catches a rail: the widest resulting band
-   is joint 1's 128..839, and the ~1013 a failing pot produces is outside it.
+   Back to 60 on 2026-09-17, because the band it widens is now the right one.
 
-   Joint 2 is the one joint that does not need the slack -- its stops ARE 90 and
-   270, so the margin there covers only noise. It keeps it anyway so all three
-   behave alike. */
-#define AV_SANITY_MARGIN 120
+   It was raised to 120 to paper over a conflation: the guard bracketed
+   avAtMinDegree..avAtMaxDegree, which is the 90..270 REFERENCE SPAN, while real
+   travel runs past it. The slack had to absorb that difference, and even 120 was
+   not enough -- the right arm's joint 1 stop sits at AV 884 against a ceiling of
+   839, so a joint parked there read as a pot fault and refused to move.
+
+   The guard now brackets the calibrated LIMITS instead (see avAtDegrees), so the
+   margin means what it says: slack beyond real travel, for noise and calibration
+   drift. 60 counts is ~19 deg on left joint 1 and still catches a rail -- the
+   widest resulting band is right joint 1's 130..923, and the ~1013 a failing pot
+   produces is well outside it. Tighter is better here: this guard is what caught
+   joint 2's intermittently railing pot. */
+#define AV_SANITY_MARGIN 60
 
 char whichArm;
 
@@ -1417,6 +1436,23 @@ void motorTimer() {
 
 
 
+/* AV reading that corresponds to an angle, from this joint's calibration.
+ *
+ * The clamps and the plausibility guard below both need "the AV at a limit",
+ * and the limits are no longer 90 and 270 on every joint -- joint 1 travels
+ * well past both, by different amounts on each arm. Deriving them here keeps
+ * avAtMinDegree/avAtMaxDegree meaning strictly what they are calibrated to
+ * mean: the AV at minDegree and at minDegree+180. They are the SCALE, not the
+ * range. Conflating the two is the original bug that made every reported angle
+ * wrong, and extending the range must not reintroduce it.
+ */
+static int avAtDegrees(int motor, int degrees)
+{
+  return (int)((float)(degrees - motors[motor].minDegree)
+               * motors[motor].avPerDegree + motors[motor].avAtMinDegree);
+}
+
+
 int moveToPosition(int motor,int newPosition)
 {
     int deltaAv;
@@ -1485,52 +1521,61 @@ int moveToPosition(int motor,int newPosition)
          * difference, and drove it. It looked exactly like the motor running away
          * in the wrong direction; it was the feedback failing.
          *
-         * A reading outside the calibrated span plus AV_SANITY_MARGIN is not a
-         * joint that has travelled somewhere unexpected -- the span IS the
-         * mechanical range -- so it means a dead wiper, a floating input or a
-         * loose connection. Report and stop. A joint that does not move is
-         * recoverable; one driven from garbage may not be.
+         * A reading outside the joint's LIMITS plus AV_SANITY_MARGIN is not a
+         * joint that has travelled somewhere unexpected -- the limits are the
+         * mechanical range, measured on hardware -- so it means a dead wiper, a
+         * floating input or a loose connection. Report and stop. A joint that
+         * does not move is recoverable; one driven from garbage may not be.
+         *
+         * This deliberately brackets the limits, NOT avAtMinDegree..avAtMaxDegree.
+         * Those two are the calibration scale -- the AV at 90 and at 270 -- and
+         * joint 1 travels well beyond both. Bracketing the span instead is what
+         * previously made a joint parked on its own stop unmovable.
          */
-        if (currentAvNow < motors[motor].avAtMinDegree - AV_SANITY_MARGIN ||
-            currentAvNow > motors[motor].avAtMaxDegree + AV_SANITY_MARGIN)
+        int avAtLower = avAtDegrees(motor, motorLimits[motor].lowerLimit);
+        int avAtUpper = avAtDegrees(motor, motorLimits[motor].upperLimit);
+        int avFloor = avAtLower - AV_SANITY_MARGIN;
+        int avCeil  = avAtUpper + AV_SANITY_MARGIN;
+
+        if (currentAvNow < avFloor || currentAvNow > avCeil)
         {
             Serial.print(F("*ERR joint "));
             Serial.print(motor);
             Serial.print(F(" position reading "));
             Serial.print(currentAvNow);
             Serial.print(F(" outside "));
-            Serial.print(motors[motor].avAtMinDegree - AV_SANITY_MARGIN);
+            Serial.print(avFloor);
             Serial.print(F(".."));
-            Serial.print(motors[motor].avAtMaxDegree + AV_SANITY_MARGIN);
+            Serial.print(avCeil);
             Serial.println(F(" - check the pot, not moving"));
             return 0;
         }
 
         // if we are going from a higher av to a lower one, make sure the target is not too low
         
-        if ((currentAvNow > newTargetAv) && ( newTargetAv < motors[motor].avAtMinDegree))
+        if ((currentAvNow > newTargetAv) && (newTargetAv < avAtLower))
         {
           if (debugMode)
           {
             Serial.print(F("*targetAv below min "));
             Serial.println(newTargetAv);
           }
-          
-          newTargetAv = motors[motor].avAtMinDegree;
+
+          newTargetAv = avAtLower;
         }
         else
         {
           // if we are going from a lower av to a higher one make sure the target is not too high
-          if ((currentAvNow < newTargetAv) && ( newTargetAv > motors[motor].avAtMaxDegree))
+          if ((currentAvNow < newTargetAv) && (newTargetAv > avAtUpper))
           {
             if (debugMode)
             {
               Serial.print(F("*targetAv above max "));
               Serial.print(newTargetAv);
               Serial.print(F(" "));
-              Serial.println(motors[motor].avAtMaxDegree);
+              Serial.println(avAtUpper);
             }
-            newTargetAv = motors[motor].avAtMaxDegree;
+            newTargetAv = avAtUpper;
           }
         }
 
