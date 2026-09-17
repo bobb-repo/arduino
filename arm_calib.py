@@ -88,7 +88,12 @@ import sys
 import termios
 import time
 
-PORT = "/dev/ttyUSB0"
+# No default port on purpose. /dev/ttyUSB<n> is assigned in enumeration order and
+# swaps whenever anything is replugged or the udev rules are reloaded -- it is not
+# an identity. Pass --port /dev/left_arm or /dev/right_arm, and run 'whoami' when
+# in any doubt: only the f0 marker identifies the BOARD, and the board is bolted
+# to its arm.
+PORT = None
 BAUD = 57600
 
 TICKS_PADDING = 150          # must match the firmware
@@ -124,6 +129,102 @@ CURRENT_BY_ARM["l"] = {
 CURRENT = CURRENT_BY_ARM["r"]
 
 PLAUSIBLE_MARGIN = 120       # matches the firmware's AV_SANITY_MARGIN
+
+# Where the f0 identification is remembered between commands, so that every
+# invocation is checked without resetting the board every time.
+IDENT_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           ".arm_identity.json")
+IDENT_MAX_AGE = 4 * 3600     # seconds; after this, re-verify rather than trust
+
+# Commands that may reset the board to re-read the f0 banner. free/hold/mark are
+# excluded deliberately: a reset re-grips a joint that was freewheeling for hand
+# positioning, moving the very thing being measured.
+RESET_SAFE = {"status", "span", "scale", "accuracy", "fit", "marks"}
+
+
+def _read_ident():
+    try:
+        with open(IDENT_CACHE) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_ident(port, which):
+    data = _read_ident()
+    data[port] = {"arm": which, "when": time.time()}
+    try:
+        with open(IDENT_CACHE, "w") as handle:
+            json.dump(data, handle, indent=2, sort_keys=True)
+    except OSError:
+        pass
+
+
+def read_f0_identity(port):
+    """Reset the board and report 'l' or 'r' from the f0 marker in its banner.
+
+    The right arm has a VL53L1X time-of-flight sensor and the left does not, so
+    sensor.init() fails on the left arm only and the library prints 'f0'. It
+    identifies the BOARD, and the board is bolted to its arm, so it survives
+    cable swaps and ttyUSB renumbering -- which port names do not.
+    """
+    os.system(f"stty -F {port} {BAUD} raw -echo")
+    fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    try:
+        fcntl.ioctl(fd, termios.TIOCMBIC, struct.pack("I", termios.TIOCM_DTR))
+        time.sleep(0.3)
+        fcntl.ioctl(fd, termios.TIOCMBIS, struct.pack("I", termios.TIOCM_DTR))
+        time.sleep(3.0)
+        banner = b""
+        end = time.time() + 2.5
+        while time.time() < end:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                try:
+                    banner += os.read(fd, 4096)
+                except BlockingIOError:
+                    pass
+    finally:
+        os.close(fd)
+    text = banner.decode("ascii", "replace")
+    return ("l" if any(l.strip() == "f0" for l in text.splitlines()) else "r"), text
+
+
+def verify_arm(port, expect, mode):
+    """Refuse to run against the wrong arm. Returns None, or an error string.
+
+    Two sessions were spent calibrating the wrong arm because the port name was
+    trusted. It could not be: udev maps by USB socket, so boards in swapped
+    sockets produce plausible inverted names, and ttyUSB<n> is assigned in
+    enumeration order and moves on any replug. --arm cannot catch it either --
+    it proves which MOTOR table the firmware loaded, not which arm the cables
+    reach.
+    """
+    if mode in RESET_SAFE:
+        seen, _ = read_f0_identity(port)
+        _write_ident(port, seen)
+    else:
+        # Cannot reset here without disturbing a hand-positioned joint, so fall
+        # back to what a recent reset established.
+        entry = _read_ident().get(port)
+        if not entry:
+            return (f"{port} has not been identified this session. Run:\n"
+                    f"    ./arm_calib.py --port {port} whoami --expect {expect}\n"
+                    f"  '{mode}' must not reset the board, so it cannot check "
+                    f"the f0 marker itself.")
+        if time.time() - entry["when"] > IDENT_MAX_AGE:
+            return (f"{port} was last identified "
+                    f"{(time.time()-entry['when'])/3600:.1f} h ago, too old to "
+                    f"trust. Re-run 'whoami --expect {expect}'.")
+        seen = entry["arm"]
+
+    if seen != expect:
+        return (f"{port} is the {'LEFT' if seen == 'l' else 'RIGHT'} arm "
+                f"(f0 marker {'present' if seen == 'l' else 'absent'}), but "
+                f"--arm {expect} was given.\n"
+                f"  Refusing to continue: this is exactly the mix-up that "
+                f"produced two days of marks for the wrong arm.")
+    return None
 
 
 class ArmSelectError(RuntimeError):
@@ -242,6 +343,62 @@ class Arm:
 
     def hold(self):
         self.cmd("k 1", settle=1.5)
+
+
+def do_whoami(_arm, args):
+    """Which physical arm is on this port? Resets the board to read its banner.
+
+    This exists because two sessions were wasted calibrating the wrong arm. The
+    port name could not be trusted: udev maps by USB socket, so two boards in
+    swapped sockets give perfectly plausible but inverted names, and ttyUSB<n>
+    is assigned in enumeration order and moves on any replug. The --arm flag
+    cannot help either -- it proves which MOTOR table the firmware loaded, never
+    which arm the cables reach.
+
+    The one honest signal is the VL53L1X time-of-flight sensor. The right arm
+    has one; the left does not, so the library prints 'f0' from sensor.init()
+    during setup on the left arm only. It follows the BOARD, and the board is
+    attached to its arm, so it survives every cable and enumeration change.
+
+    Costs a reset, which is why it is a separate command rather than a check on
+    every invocation: a reset drops the arm selection and reloads the firmware's
+    default currents.
+    """
+    port = args.port
+    os.system(f"stty -F {port} {BAUD} raw -echo")
+    fd = os.open(port, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
+    try:
+        fcntl.ioctl(fd, termios.TIOCMBIC, struct.pack("I", termios.TIOCM_DTR))
+        time.sleep(0.3)
+        fcntl.ioctl(fd, termios.TIOCMBIS, struct.pack("I", termios.TIOCM_DTR))
+        time.sleep(3.0)
+        banner = b""
+        end = time.time() + 2.5
+        while time.time() < end:
+            ready, _, _ = select.select([fd], [], [], 0.2)
+            if ready:
+                try:
+                    banner += os.read(fd, 4096)
+                except BlockingIOError:
+                    pass
+    finally:
+        os.close(fd)
+
+    text = banner.decode("ascii", "replace")
+    print(f"{port}:")
+    for line in text.strip().splitlines():
+        print(f"   {line.strip()}")
+
+    saw_f0 = any(line.strip() == "f0" for line in text.splitlines())
+    which = "LEFT" if saw_f0 else "RIGHT"
+    print(f"\n   f0 marker {'PRESENT' if saw_f0 else 'absent'} "
+          f"-> this is the {which} arm")
+    print(f"   use:  --port {port} --arm {'l' if saw_f0 else 'r'}")
+    if args.expect and args.expect != ("l" if saw_f0 else "r"):
+        print(f"\n   ! MISMATCH: you expected the "
+              f"{'LEFT' if args.expect == 'l' else 'RIGHT'} arm. Do not "
+              f"calibrate until this is resolved.")
+        return 1
 
 
 def require_av(arm, joint, what):
@@ -634,15 +791,26 @@ def do_marks(arm, args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--port", default=PORT)
+    parser.add_argument("--port", default=PORT, required=PORT is None,
+                        help="/dev/left_arm or /dev/right_arm. NOT ttyUSB<n>, "
+                             "which moves on any replug.")
     parser.add_argument("--arm", choices=("r", "l"), default="r",
                         help="which arm this board is. Both arms run the same "
                              "image and boot as the right arm; 'l' sends 'a l' "
                              "and verifies it took. Also picks which constants "
                              "are shown as 'currently'.")
+    parser.add_argument("--no-verify", action="store_true",
+                        help="skip the f0 arm check. Only for a board with no "
+                             "ToF fitted on either arm, where f0 cannot "
+                             "discriminate.")
     sub = parser.add_subparsers(dest="mode", required=True)
 
     sub.add_parser("status", help="positions, AV, currents, driver faults")
+
+    p = sub.add_parser("whoami", help="which physical arm is on this port "
+                                      "(resets the board)")
+    p.add_argument("--expect", choices=("r", "l"), default=None,
+                   help="fail if the board is not this arm")
 
     p = sub.add_parser("scale", help="measure ticksPerDegree")
     p.add_argument("joint", type=int, choices=(0, 1, 2))
@@ -687,6 +855,15 @@ def main():
 
     global CURRENT
     CURRENT = CURRENT_BY_ARM[args.arm]
+
+    if args.mode == "whoami":
+        return do_whoami(None, args)
+
+    if not args.no_verify:
+        problem = verify_arm(args.port, args.arm, args.mode)
+        if problem:
+            print(f"ARM CHECK FAILED\n  {problem}")
+            return 1
 
     try:
         arm = Arm(args.port, arm=args.arm)
