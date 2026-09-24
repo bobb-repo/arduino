@@ -208,7 +208,18 @@ unsigned int switchTestLast = 0;
 // FIX #12: removed unused globals tickA, flag, lastTime
 
 int airValveOn = 0;
-int errorCode = 99;
+
+/* Field 4 of the STATE line, surfaced to ros2_control as tower/t_s_error.
+   Through v1.24 this was declared 99 and never assigned anywhere -- it was
+   printed on every status line and always read 99, so the picking layer could
+   not tell a calibrated tower from an uncalibrated one. picking_v2's
+   CalibrateTower is built to check exactly this value; give it something to
+   check. */
+#define TOWER_ERR_NONE            0   /* calibrated, no fault */
+#define TOWER_ERR_CALIBRATING     1   /* calibration under way */
+#define TOWER_ERR_NOT_CALIBRATED 99   /* power-on state, never calibrated */
+
+int errorCode = TOWER_ERR_NOT_CALIBRATED;
 
 
 #define CALIBRATE_IDLE            0
@@ -716,6 +727,9 @@ int runCommand() {
         Serial.println(F("OK"));
         return 0;
       }
+
+      towerCalibrationDone = false;
+      errorCode = TOWER_ERR_CALIBRATING;
 
       for (int i = 0; i < MOTORS_DEFINED; i++) {
         mp = &motors[i];
@@ -1231,6 +1245,7 @@ void loop() {
         if (motors[0].calibrationComplete && motors[1].calibrationComplete &&
             motors[2].calibrationComplete && motors[3].calibrationComplete) {
           towerCalibrationDone = true;
+          errorCode = TOWER_ERR_NONE;
 
           Serial.println(F("*OK- Cal Done"));
         }
