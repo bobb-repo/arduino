@@ -21,11 +21,14 @@ Paired commits, 2026-09-17:
 |  | joint 0 | joint 1 | joint 2 |
 |---|---|---|---|
 | left  | 90 .. 260 | 79 .. 286 | 90 .. 270 |
-| right | 90 .. 290 | 68 .. 325 | 90 .. 270 |
+| right | 90 .. 290 | 68 .. 325 | 79 .. 280 |
 
 Left joint 0's upper limit is **lower** than the old 270: its stop is at 268.7
-deg, so 270 was commanding the joint into it. Joint 2 is unmeasured on both arms
-and keeps 90/270.
+deg, so 270 was commanding the joint into it. Left joint 2 still stops at 90/270.
+
+Right joint 2's stops were opened out and it was recalibrated 2026-09-24:
+marks at 90/270 (AV 225/784, so 3.106 AV/deg) and stops found by `stops 2` at
+70.0 and 288.6 deg. `span` no longer applies to it.
 
 ## Two things that cost days
 

@@ -7,7 +7,7 @@
 #include <LibPrintf.h>
 #include <VL53L1X.h>
 
-#define VERSION " 2.13"
+#define VERSION " 2.15"
 
 #define USE_TIMER_1 false
 #define USE_TIMER_2 true
@@ -484,6 +484,8 @@ MOTOR_LIMITS leftMotorLimits[MOTORS_DEFINED] = {  {90,260},{79,286},{90,270} }  
  * the tick budget for a move that terminates on AV anyway, so too high costs
  * nothing and too low truncates the move short of target.
  *
+ * [Joint 2 below is SUPERSEDED -- recalibrated 2026-09-24 from hand marks after
+ * its stops were opened out; see rightMotorLimits. Kept for the history.]
  * Joint 2 was done differently, and is the better measurement: its end stops
  * ARE 90 and 270, so arm_calib.py's 'span' creeps onto each stop and reads the
  * AV there -- two physical references rather than two judged angles. Both ends
@@ -501,9 +503,21 @@ MOTOR_LIMITS leftMotorLimits[MOTORS_DEFINED] = {  {90,260},{79,286},{90,270} }  
  */
 MOTOR rightMotors[MOTORS_DEFINED] = { {ST1_ENABLE,ST1_DIR,ST1_STEP,ST1_POS,ST1_PDN,ST1_DIAG,19.0,2.750,90,253, 748 ,1,0,1,0,MOTOR_IDLE,0},
                                       {ST2_ENABLE,ST2_DIR,ST2_STEP,ST2_POS,ST2_PDN,ST2_DIAG,18.0,2.617,90,248, 719 ,0,0,1,0,MOTOR_IDLE,0},
-                                      {ST3_ENABLE,ST3_DIR,ST3_STEP,ST3_POS,ST3_PDN,ST3_DIAG,18.0,2.983,90,222, 759, 1,0,1, 0,MOTOR_IDLE,0}  };
+                                      {ST3_ENABLE,ST3_DIR,ST3_STEP,ST3_POS,ST3_PDN,ST3_DIAG,18.0,3.106,90,225, 784, 1,0,1, 0,MOTOR_IDLE,0}  };
 
-MOTOR_LIMITS rightMotorLimits[MOTORS_DEFINED] = {  {90,290},{68,325},{90,270} }  ;
+/* Joint 2 (the wrist) re-done 2026-09-24 after its mechanical stops were opened
+ * out past 90/270. Scale from hand marks at 90 and 270 (AV 225 and 784, the 270
+ * sampled freewheeling, since re-gripping snapped the joint and spoiled the first
+ * try); then 'arm_calib.py stops 2' crept onto the new stops, both of which
+ * tapered like real stops, and converted them with that scale:
+ *
+ *   RIGHT joint 2 stops at 70.0 and 288.6 deg   -> 79 .. 280
+ *
+ * The old stop-to-stop span was compressed: the stop it took for 270 reads
+ * 262 deg on the new scale. The left arm's joint 2 is untouched and still stops
+ * at 90/270.
+ */
+MOTOR_LIMITS rightMotorLimits[MOTORS_DEFINED] = {  {90,290},{68,325},{79,280} }  ;
 
 MOTOR *motors;
 MOTOR_LIMITS *motorLimits;

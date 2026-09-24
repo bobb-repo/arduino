@@ -79,6 +79,7 @@ Three things this has to get right, all learned the hard way:
 import argparse
 import fcntl
 import json
+import math
 import os
 import re
 import select
@@ -112,7 +113,9 @@ CURRENT_BY_ARM["r"] = {
     # stops at 90/270, so only joint 2 can be done that way.
     0: dict(ticksPerDegree=19.0, avPerDegree=2.750, avAtMin=253, avAtMax=748),
     1: dict(ticksPerDegree=15.9, avPerDegree=2.617, avAtMin=248, avAtMax=719),
-    2: dict(ticksPerDegree=18.0, avPerDegree=2.983, avAtMin=222, avAtMax=759),
+    # Joint 2 redone 2026-09-24 from marks at 90/270 after its stops were opened
+    # out to 70.0 / 288.6 deg; the old 'span' numbers were 2.983 / 222 / 759.
+    2: dict(ticksPerDegree=18.0, avPerDegree=3.106, avAtMin=225, avAtMax=784),
 }
 
 # Left arm: still the ORIGINAL uncalibrated numbers from leftMotors[]. These are
@@ -128,7 +131,12 @@ CURRENT_BY_ARM["l"] = {
 # Rebound by main() once --arm is known. Module-level so av() can reach it.
 CURRENT = CURRENT_BY_ARM["r"]
 
-PLAUSIBLE_MARGIN = 120       # matches the firmware's AV_SANITY_MARGIN
+PLAUSIBLE_MARGIN = 120
+
+# (arm, joint) pairs whose mechanical stops ARE 90 and 270 deg, so 'span' can use
+# the stops as references. The right arm's joint 2 was one until its stops were
+# opened out (2026-09-24); now only the left arm's joint 2 is.
+STOPS_AT_90_270 = {("l", 2)}       # matches the firmware's AV_SANITY_MARGIN
 
 # Where the f0 identification is remembered between commands, so that every
 # invocation is checked without resetting the board every time.
@@ -139,7 +147,7 @@ IDENT_MAX_AGE = 4 * 3600     # seconds; after this, re-verify rather than trust
 # Commands that may reset the board to re-read the f0 banner. free/hold/mark are
 # excluded deliberately: a reset re-grips a joint that was freewheeling for hand
 # positioning, moving the very thing being measured.
-RESET_SAFE = {"status", "span", "scale", "accuracy", "fit", "marks"}
+RESET_SAFE = {"status", "span", "stops", "scale", "accuracy", "fit", "marks"}
 
 
 def _read_ident():
@@ -502,6 +510,41 @@ def do_scale(arm, args):
 
 # -------------------------------------------------------------------- span
 
+def _creep_to_ends(arm, joint, args):
+    """Creep onto the low stop, then the high one. {"low": av, "high": av}, or None.
+
+    Stops as soon as a step moves less than --stall-av, so it finds each stop
+    without driving into it repeatedly. Open-loop 'c'/'w' moves, so the
+    firmware's MOTOR_LIMITS clamp does not apply -- which is the point.
+    """
+    ends = {}
+    for name, direction in (("low", "c"), ("high", "w")):
+        last = require_av(arm, joint, "find limits")
+        if last is None:
+            return None
+        travelled = 0
+        while travelled < args.max_travel:
+            arm.cmd(f"{direction} {joint} {int(args.step * CURRENT[joint]['ticksPerDegree'])}",
+                    settle=3.0)
+            now = arm.av_of(joint)
+            if now is None:
+                print(f"  ! reading went implausible at the {name} end - stopping")
+                print("    (outside the plausibility band; --plausible-margin widens it)")
+                return None
+            moved = abs(now - last)
+            print(f"  {name:>4} end: AV {last:>4} -> {now:>4}  ({moved:+3d})")
+            if moved < args.stall_av:
+                ends[name] = now
+                print(f"  {name} limit found at AV {now}\n")
+                break
+            last = now
+            travelled += args.step
+        else:
+            print(f"  ! travelled {args.max_travel} deg without finding the {name} end\n")
+            return None
+    return ends
+
+
 def do_span(arm, args):
     """Find the AV at both ends of travel, which gives avPerDegree directly.
 
@@ -513,39 +556,19 @@ def do_span(arm, args):
     print(f"joint {joint}: finding travel limits in {args.step} deg steps")
     print(f"  stops when a step moves less than {args.stall_av} AV counts")
     print(f"  treating the stops as {args.low_deg} and {args.high_deg} deg")
-    if joint != 2 and (args.low_deg, args.high_deg) == (JOINT_MIN_DEG, JOINT_MAX_DEG):
+    if ((arm.arm, joint) not in STOPS_AT_90_270
+            and (args.low_deg, args.high_deg) == (JOINT_MIN_DEG, JOINT_MAX_DEG)):
         print()
-        print("  ! Joints 0 and 1 travel BEYOND 90 and 270 mechanically, so their")
-        print("    end stops are NOT those angles and this will be wrong. Only")
-        print("    joint 2 stops at 90/270. Measure the stop angles externally and")
-        print("    pass --low-deg/--high-deg, or use 'mark' and 'fit' instead.")
+        print("  ! This joint travels BEYOND 90 and 270 mechanically, so its end")
+        print("    stops are NOT those angles and this will be wrong. Only the")
+        print("    LEFT arm's joint 2 still stops at 90/270. Calibrate with 'mark'")
+        print("    and 'fit', then find the stops with 'stops'.")
         return
     print()
 
-    ends = {}
-    for name, direction in (("low", "c"), ("high", "w")):
-        last = require_av(arm, joint, "find limits")
-        if last is None:
-            return
-        travelled = 0
-        while travelled < args.max_travel:
-            arm.cmd(f"{direction} {joint} {int(args.step * CURRENT[joint]['ticksPerDegree'])}",
-                    settle=3.0)
-            now = arm.av_of(joint)
-            if now is None:
-                print(f"  ! reading went implausible at the {name} end - stopping")
-                return
-            moved = abs(now - last)
-            print(f"  {name:>4} end: AV {last:>4} -> {now:>4}  ({moved:+3d})")
-            if moved < args.stall_av:
-                ends[name] = now
-                print(f"  {name} limit found at AV {now}\n")
-                break
-            last = now
-            travelled += args.step
-        else:
-            print(f"  ! travelled {args.max_travel} deg without finding the {name} end\n")
-            return
+    ends = _creep_to_ends(arm, joint, args)
+    if ends is None:
+        return
 
     lo, hi = min(ends.values()), max(ends.values())
     degrees = args.high_deg - args.low_deg
@@ -559,6 +582,50 @@ def do_span(arm, args):
           f"   currently {now['avAtMin']}")
     print(f"  avAtMaxDegree  : {at_max:.0f}  (AV at {JOINT_MAX_DEG} deg)"
           f"   currently {now['avAtMax']}")
+
+
+def do_stops(arm, args):
+    """Find both mechanical stops and report them in DEGREES, with limits.
+
+    For a joint whose stops are not at known angles: calibrate it first with
+    'mark' and 'fit', put the fitted constants in --av-per-degree/--av-at-min
+    (or into CURRENT_BY_ARM), then run this. Each stop's AV is converted with
+    that calibration -- how every stop in MOTOR_LIMITS was measured on
+    2026-09-17 -- and the suggested limit is held --margin degrees inside it.
+    """
+    joint = args.joint
+    now = CURRENT[joint]
+    per_degree = args.av_per_degree or now["avPerDegree"]
+    at_min = args.av_at_min if args.av_at_min is not None else now["avAtMin"]
+
+    global PLAUSIBLE_MARGIN
+    PLAUSIBLE_MARGIN = args.plausible_margin
+    low_ok = at_min - PLAUSIBLE_MARGIN
+    high_ok = at_min + 180 * per_degree + PLAUSIBLE_MARGIN
+    # av() bounds against CURRENT; make it bound against the calibration in use.
+    CURRENT[joint] = dict(now, avPerDegree=per_degree, avAtMin=at_min,
+                          avAtMax=round(at_min + 180 * per_degree))
+
+    arm.hold()
+    print(f"joint {joint}: finding the stops in {args.step} deg steps")
+    print(f"  converting with avPerDegree {per_degree:.3f}, avAtMinDegree {at_min}")
+    print(f"  readings outside AV {low_ok:.0f} .. {high_ok:.0f} abort the creep\n")
+
+    ends = _creep_to_ends(arm, joint, args)
+    if ends is None:
+        return
+
+    def degrees(av):
+        return (av - at_min) / per_degree + JOINT_MIN_DEG
+
+    lo, hi = sorted((degrees(ends["low"]), degrees(ends["high"])))
+    lim_lo, lim_hi = math.ceil(lo + args.margin), math.floor(hi - args.margin)
+    print(f"  stops          : {lo:.1f} .. {hi:.1f} deg"
+          f"   (AV {min(ends.values())} .. {max(ends.values())})")
+    print(f"  limits         : {lim_lo} .. {lim_hi} deg   "
+          f"({args.margin:g} deg inside each stop)")
+    print(f"  radians        : {math.radians(lim_lo):.3f} .. {math.radians(lim_hi):.3f}"
+          f"   (cobo_controller.yaml / LIMITS_BY_ARM)")
 
 
 # ---------------------------------------------------------------- accuracy
@@ -856,6 +923,20 @@ def main():
     p.add_argument("--high-deg", type=float, default=JOINT_MAX_DEG,
                    help="true angle of the high stop (only 270 on joint 2)")
 
+    p = sub.add_parser("stops", help="find the stops, in degrees, and limits")
+    p.add_argument("joint", type=int, choices=(0, 1, 2))
+    p.add_argument("--av-per-degree", type=float, default=None,
+                   help="calibration to convert with (default: CURRENT_BY_ARM)")
+    p.add_argument("--av-at-min", type=int, default=None,
+                   help="AV at 90 deg for that calibration")
+    p.add_argument("--step", type=int, default=8, help="degrees per creep step")
+    p.add_argument("--stall-av", type=int, default=6, help="AV change that counts as stopped")
+    p.add_argument("--max-travel", type=int, default=250, help="give up after this many deg")
+    p.add_argument("--margin", type=float, default=8.0,
+                   help="degrees to hold each limit inside its stop")
+    p.add_argument("--plausible-margin", type=int, default=PLAUSIBLE_MARGIN,
+                   help="AV slack beyond 90..270 before a reading counts as railed")
+
     p = sub.add_parser("free", help="release joints for positioning by hand")
     p.add_argument("--joint", type=int, choices=(0, 1, 2), default=None,
                    help="release only this joint; the others keep holding")
@@ -909,7 +990,7 @@ def main():
     print(f"[{ 'LEFT' if args.arm == 'l' else 'RIGHT' } arm on {args.port}, "
           f"confirmed by the status field count]\n")
     try:
-        {"status": do_status, "scale": do_scale, "span": do_span,
+        {"status": do_status, "scale": do_scale, "span": do_span, "stops": do_stops,
          "accuracy": do_accuracy, "mark": do_mark, "fit": do_fit,
          "marks": do_marks, "free": do_free,
          "hold": do_hold}[args.mode](arm, args)
