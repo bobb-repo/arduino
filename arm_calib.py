@@ -111,7 +111,9 @@ CURRENT_BY_ARM["r"] = {
     # All three measured 2026-09-14. Joints 0 and 1 from marks at 90 and 270
     # deg; joint 2 from 'span', which reads its actual end stops -- only joint 2
     # stops at 90/270, so only joint 2 can be done that way.
-    0: dict(ticksPerDegree=19.0, avPerDegree=2.750, avAtMin=253, avAtMax=748),
+    # Joint 0 redone 2026-09-30 from marks at 90/270 (pot had drifted ~9 deg);
+    # the 09-14 numbers were 2.750 / 253 / 748. See rightMotorLimits in arm14.
+    0: dict(ticksPerDegree=19.0, avPerDegree=3.056, avAtMin=268, avAtMax=818),
     1: dict(ticksPerDegree=15.9, avPerDegree=2.617, avAtMin=248, avAtMax=719),
     # Joint 2 redone 2026-09-24 from marks at 90/270 after its stops were opened
     # out to 70.0 / 288.6 deg; the old 'span' numbers were 2.983 / 222 / 759.

@@ -7,7 +7,7 @@
 #include <LibPrintf.h>
 #include <VL53L1X.h>
 
-#define VERSION " 2.21"
+#define VERSION " 2.22"
 
 #define USE_TIMER_1 false
 #define USE_TIMER_2 true
@@ -447,6 +447,7 @@ MOTOR leftMotors[MOTORS_DEFINED] = { {ST1_ENABLE,ST1_DIR,ST1_STEP,ST1_POS,ST1_PD
  *   LEFT  joint 0 stops at 82.1 and 268.7 deg   -> 90 .. 260
  *   LEFT  joint 1 stops at 70.9 and 294.6 deg   -> 79 .. 286
  *   RIGHT joint 0 high stop at 298.0 deg        -> 90 .. 290 (low not measured)
+ *                 [superseded 2026-09-30, see rightMotorLimits]
  *   RIGHT joint 1 stops at 59.8 and 333.0 deg   -> 68 .. 325
  *
  * Note LEFT joint 0's upper limit went DOWN, 270 -> 260. Its high stop is at
@@ -501,7 +502,7 @@ MOTOR_LIMITS leftMotorLimits[MOTORS_DEFINED] = {  {90,260},{79,286},{90,270} }  
  * two-size move that cancels TICKS_PADDING; the stored 15.9 was BELOW that,
  * which is the truncating direction, so it is now 18.0.
  */
-MOTOR rightMotors[MOTORS_DEFINED] = { {ST1_ENABLE,ST1_DIR,ST1_STEP,ST1_POS,ST1_PDN,ST1_DIAG,19.0,2.750,90,253, 748 ,1,0,1,0,MOTOR_IDLE,0},
+MOTOR rightMotors[MOTORS_DEFINED] = { {ST1_ENABLE,ST1_DIR,ST1_STEP,ST1_POS,ST1_PDN,ST1_DIAG,19.0,3.056,90,268, 818 ,1,0,1,0,MOTOR_IDLE,0},
                                       {ST2_ENABLE,ST2_DIR,ST2_STEP,ST2_POS,ST2_PDN,ST2_DIAG,18.0,2.617,90,248, 719 ,0,0,1,0,MOTOR_IDLE,0},
                                       {ST3_ENABLE,ST3_DIR,ST3_STEP,ST3_POS,ST3_PDN,ST3_DIAG,18.0,3.106,90,225, 784, 1,0,1, 0,MOTOR_IDLE,0}  };
 
@@ -587,7 +588,26 @@ int aimTenthFor(int motor, int targetDeg)
 }
 int  pendingFinalAv[MOTORS_DEFINED]      = { -1, -1, -1 };  // stage-2 target, -1 none
 
-MOTOR_LIMITS rightMotorLimits[MOTORS_DEFINED] = {  {90,290},{68,325},{79,280} }  ;
+/* 2.22 -- RIGHT joint 0 recalibrated 2026-09-30. Its pot had drifted: at a
+ * measured 180 deg it read 189 on the 09-14 scale (2.750 / 253 / 748), and the
+ * joint reported 303 deg while resting past its "298 deg" stop. New scale from
+ * hand marks at 90 and 270 (AV 268 and 818). Two hand marks at 180 (AV 526,
+ * 507) disagreed with each other and with the line; a stepper sweep (equal
+ * open-loop moves, 4 legs) showed the pot linear to ~+-2 deg and put 180 at
+ * AV ~543, so the 180 marks were discarded -- as on 09-14. 'arm_calib.py stops 0'
+ * then read the stops at AV 198 / 858:
+ *
+ *   RIGHT joint 0 stops at 67.1 and 283.1 deg   -> 75 .. 275
+ *
+ * The old 290 upper limit was past the real stop. Every joint 0 command now
+ * lands 5-13 deg from where 2.21 put it (2.21 fell short), so eye-tuned
+ * trajectory values for this joint need re-checking.
+ *
+ * Same sweep: reversing from falling to rising AV loses ~12 deg of motion (the
+ * first rising step moved 1-4 AV instead of ~40; the other reversal lost none),
+ * and falling steps move ~20% less than rising ones. Mechanical, not fixed here.
+ */
+MOTOR_LIMITS rightMotorLimits[MOTORS_DEFINED] = {  {75,275},{68,325},{79,280} }  ;
 
 MOTOR *motors;
 MOTOR_LIMITS *motorLimits;
