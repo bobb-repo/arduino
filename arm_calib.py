@@ -117,7 +117,9 @@ CURRENT_BY_ARM["r"] = {
     1: dict(ticksPerDegree=15.9, avPerDegree=2.617, avAtMin=248, avAtMax=719),
     # Joint 2 redone 2026-09-24 from marks at 90/270 after its stops were opened
     # out to 70.0 / 288.6 deg; the old 'span' numbers were 2.983 / 222 / 759.
-    2: dict(ticksPerDegree=18.0, avPerDegree=3.106, avAtMin=225, avAtMax=784),
+    # Redone again 2026-10-08 for a NEW POT (arm14 v2.23): five hand marks
+    # 90..270, worst residual 1.7 deg. The 09-24 numbers were 3.106 / 225 / 784.
+    2: dict(ticksPerDegree=18.0, avPerDegree=3.046, avAtMin=202, avAtMax=750),
 }
 
 # Left arm: still the ORIGINAL uncalibrated numbers from leftMotors[]. These are

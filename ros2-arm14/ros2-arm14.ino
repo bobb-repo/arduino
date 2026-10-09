@@ -7,7 +7,7 @@
 #include <LibPrintf.h>
 #include <VL53L1X.h>
 
-#define VERSION " 2.22"
+#define VERSION " 2.23"
 
 #define USE_TIMER_1 false
 #define USE_TIMER_2 true
@@ -504,7 +504,23 @@ MOTOR_LIMITS leftMotorLimits[MOTORS_DEFINED] = {  {90,260},{79,286},{90,270} }  
  */
 MOTOR rightMotors[MOTORS_DEFINED] = { {ST1_ENABLE,ST1_DIR,ST1_STEP,ST1_POS,ST1_PDN,ST1_DIAG,19.0,3.056,90,268, 818 ,1,0,1,0,MOTOR_IDLE,0},
                                       {ST2_ENABLE,ST2_DIR,ST2_STEP,ST2_POS,ST2_PDN,ST2_DIAG,18.0,2.617,90,248, 719 ,0,0,1,0,MOTOR_IDLE,0},
-                                      {ST3_ENABLE,ST3_DIR,ST3_STEP,ST3_POS,ST3_PDN,ST3_DIAG,18.0,3.106,90,225, 784, 1,0,1, 0,MOTOR_IDLE,0}  };
+                                      {ST3_ENABLE,ST3_DIR,ST3_STEP,ST3_POS,ST3_PDN,ST3_DIAG,18.0,3.046,90,202, 750, 1,0,1, 0,MOTOR_IDLE,0}  };
+
+/* 2.23 -- RIGHT joint 2 (the wrist) recalibrated 2026-10-08 for a NEW POT.
+ * The old pot's wiring failed (readings 46-77, then pinned at 1023); it was
+ * replaced with a 10K linear pot and the wrist's mechanical parts were redone.
+ * A hand turn showed the new pot covering the whole travel with no flat spot
+ * (stops read <= AV 149 and ~787), so it cannot slip on its own end stop as the
+ * first replacement did. Five hand marks, the wrist freewheeling:
+ *
+ *     90 -> 197   135 -> 344   180 -> 480   225 -> 609   270 -> 749
+ *
+ * Least-squares fit (arm_calib.py fit 2): 3.046 AV/deg, AV 202 at 90, 750 at
+ * 270; worst residual 1.7 deg. The 135 and 225 marks were each re-measured once
+ * (the first readings were ~2.5 and ~5 deg off the line). Was 3.106/225/784.
+ * The stops and limits below are from the 09-24 work and are re-checked
+ * against this scale by 'stops 2'.
+ */
 
 /* Joint 2 (the wrist) re-done 2026-09-24 after its mechanical stops were opened
  * out past 90/270. Scale from hand marks at 90 and 270 (AV 225 and 784, the 270
@@ -607,7 +623,11 @@ int  pendingFinalAv[MOTORS_DEFINED]      = { -1, -1, -1 };  // stage-2 target, -
  * first rising step moved 1-4 AV instead of ~40; the other reversal lost none),
  * and falling steps move ~20% less than rising ones. Mechanical, not fixed here.
  */
-MOTOR_LIMITS rightMotorLimits[MOTORS_DEFINED] = {  {75,275},{68,325},{79,280} }  ;
+/* 2.23 -- RIGHT joint 2 (wrist) limits after the 2026-10-08 new pot and mechanical
+ * rework: 'stops 2' on the new calibration found 72.9 and 282.1 deg (both tapered
+ * like real stops), so 81 .. 274. Was 79 .. 280 from the 09-24 stops at 70.0 and
+ * 288.6 -- the upper stop came in 6.5 deg, leaving 280 only 2 deg off it. */
+MOTOR_LIMITS rightMotorLimits[MOTORS_DEFINED] = {  {75,275},{68,325},{81,274} }  ;
 
 MOTOR *motors;
 MOTOR_LIMITS *motorLimits;
